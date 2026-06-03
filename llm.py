@@ -6,37 +6,71 @@ import urllib.error
 from pathlib import Path
 
 import logging
+import paths
+
 log = logging.getLogger("whisper2.llm")
 
-PROMPTS_DIR = Path(__file__).parent / "prompts"
-_PROMPT_CACHE: dict[str, str] = {}
+# Cache by (prompt_name, intensity) so different intensities don't collide.
+_PROMPT_CACHE: dict[tuple[str, str], str] = {}
+
+# Final fallback when nothing in the resolution chain hits.
+_ULTIMATE_FALLBACK = "cleanup_default_standard.md"
 
 
-def _load_prompt(name: str) -> str:
-    if name in _PROMPT_CACHE:
-        return _PROMPT_CACHE[name]
-    path = PROMPTS_DIR / f"{name}.md"
-    if not path.exists():
-        path = PROMPTS_DIR / "cleanup_default.md"
-    _PROMPT_CACHE[name] = path.read_text(encoding="utf-8")
-    return _PROMPT_CACHE[name]
+def _load_prompt(name: str, intensity: str = "standard") -> str:
+    """Resolve a prompt by (name, intensity) using this lookup order:
+
+    1. USER_PROMPTS_DIR / "{name}_{intensity}.md"   — per-intensity user override
+    2. USER_PROMPTS_DIR / "{name}.md"               — intensity-agnostic user override (back-compat)
+    3. BUNDLED_PROMPTS_DIR / "{name}_{intensity}.md"
+    4. BUNDLED_PROMPTS_DIR / "{name}.md"            — legacy bundled (back-compat)
+    5. BUNDLED_PROMPTS_DIR / "cleanup_default_standard.md"  — ultimate fallback
+
+    Caches by (name, intensity). Always returns a real prompt string.
+    """
+    key = (name, intensity)
+    if key in _PROMPT_CACHE:
+        return _PROMPT_CACHE[key]
+
+    candidates = [
+        paths.USER_PROMPTS_DIR / f"{name}_{intensity}.md",
+        paths.USER_PROMPTS_DIR / f"{name}.md",
+        paths.BUNDLED_PROMPTS_DIR / f"{name}_{intensity}.md",
+        paths.BUNDLED_PROMPTS_DIR / f"{name}.md",
+        paths.BUNDLED_PROMPTS_DIR / _ULTIMATE_FALLBACK,
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8")
+                _PROMPT_CACHE[key] = text
+                return text
+        except OSError:
+            continue
+
+    # Last-resort hard-coded fallback so polish() never raises on missing files.
+    text = "Clean up this transcript. Remove disfluencies. Output only the cleaned text.\n\nRaw transcript:\n{text}\n\nCleaned text:\n"
+    _PROMPT_CACHE[key] = text
+    return text
 
 
 class OllamaPolisher:
     def __init__(self, model: str = "qwen2.5:3b",
                  host: str = "http://localhost:11434",
-                 timeout: float = 8.0, enabled: bool = True):
+                 timeout: float = 8.0, enabled: bool = True,
+                 polish_intensity: str = "standard"):
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
         self.enabled = enabled
+        self.polish_intensity = polish_intensity
         self._warned_unreachable = False
 
     def polish(self, text: str, prompt_name: str = "cleanup_default") -> str:
         if not self.enabled or not text.strip():
             return text
         try:
-            template = _load_prompt(prompt_name)
+            template = _load_prompt(prompt_name, self.polish_intensity)
             full = template.replace("{text}", text)
             result = self._call(full)
             return result if result else text

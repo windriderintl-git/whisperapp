@@ -64,6 +64,7 @@ class App:
         self.polisher = OllamaPolisher(
             model=l["model"], host=l["host"],
             timeout=l["timeout_s"], enabled=l.get("enabled", True),
+            polish_intensity=l.get("polish_intensity", "standard"),
         )
         self.skip_polish_below = int(l.get("skip_below_words", 0))
         self.output_mode = config["output"]["mode"]

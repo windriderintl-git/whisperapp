@@ -55,6 +55,22 @@ _TITLE_RULES: list[tuple[re.Pattern, str]] = [
         r"\b(Visual Studio Code|VSCode|Cursor|Windsurf|PyCharm|IntelliJ IDEA|"
         r"WebStorm|GoLand|Rider|CLion|RustRover|Sublime Text|Atom|Neovim|Zed|Xcode)\b",
         re.I), "cleanup_code"),
+    # Community / social platforms — browser-hosted. Long-form posts, comments,
+    # DMs all benefit from conversational cleanup vs. strict default.
+    # Circle: matches "... | Circle", "Circle | ...", "Circle Community", or
+    # "Foo Circle -" style — boundary chars required to avoid matching
+    # unrelated words like "Circle K" in random titles.
+    (re.compile(
+        r"\bCircle\b(\s*[-—|·]|\s+Community|\s*$)|[-—|·]\s*Circle\b",
+        re.I), "cleanup_chat"),
+    (re.compile(
+        r"\b(LinkedIn|Reddit|Facebook|Substack|Mastodon|Threads)\b",
+        re.I), "cleanup_chat"),
+    # Twitter/X: bare "X" is too loose, so require explicit boundaries —
+    # "Twitter", "X.com", "on X", or "| X" / "/ X" at end of title.
+    (re.compile(
+        r"\bTwitter\b|\bX\.com\b|/\s*X\s*$|\|\s*X\s*$|\bon X\b",
+        re.I), "cleanup_chat"),
 ]
 
 

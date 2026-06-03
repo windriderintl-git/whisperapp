@@ -80,6 +80,7 @@ class TrayController:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", self._on_settings),
             pystray.MenuItem("Open Log Folder", self._on_open_logs),
+            pystray.MenuItem("Open Prompts Folder", self._on_open_prompts),
             pystray.MenuItem("About", self._on_about),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._on_quit),
@@ -150,6 +151,13 @@ class TrayController:
             os.startfile(str(paths.LOG_DIR))
         except Exception as e:
             log.warning(f"open log folder failed: {e}")
+
+    def _on_open_prompts(self, icon, item):
+        try:
+            paths.ensure_user_prompts()
+            os.startfile(str(paths.USER_PROMPTS_DIR))
+        except Exception as e:
+            log.warning(f"open prompts folder failed: {e}")
 
     def _on_about(self, icon, item):
         def show():

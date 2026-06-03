@@ -35,10 +35,16 @@ CUDA_BIN_DIR = INSTALL_DIR / "cuda" / "bin"
 # Bundled default config (ships in the install dir / lives next to repo files in dev).
 DEFAULT_CONFIG = INSTALL_DIR / "config.yaml"
 
+# Prompt directories.
+#   BUNDLED_PROMPTS_DIR — ships with the install (read-only from the user's POV).
+#   USER_PROMPTS_DIR    — user-editable copy under %APPDATA%; overrides bundled.
+USER_PROMPTS_DIR = USER_DATA_DIR / "prompts"
+BUNDLED_PROMPTS_DIR = INSTALL_DIR / "prompts"
+
 
 def ensure_user_dirs() -> None:
     """Create %APPDATA%\\Whisper2\\... and seed config.yaml from the bundled
-    template if the user doesn't yet have one."""
+    template if the user doesn't yet have one. Also seeds the user prompts dir."""
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_PATH.exists() and DEFAULT_CONFIG.exists() and DEFAULT_CONFIG != CONFIG_PATH:
@@ -46,6 +52,23 @@ def ensure_user_dirs() -> None:
             shutil.copyfile(DEFAULT_CONFIG, CONFIG_PATH)
         except OSError:
             pass
+    ensure_user_prompts()
+
+
+def ensure_user_prompts() -> None:
+    """Seed %APPDATA%\\Whisper2\\prompts\\ from the bundled prompts on first call.
+    Idempotent: only copies files that don't already exist (user edits win).
+    Cheap and self-healing — safe to call on every startup."""
+    USER_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not BUNDLED_PROMPTS_DIR.is_dir():
+        return
+    for src in BUNDLED_PROMPTS_DIR.glob("*.md"):
+        dst = USER_PROMPTS_DIR / src.name
+        if not dst.exists():
+            try:
+                shutil.copyfile(src, dst)
+            except OSError:
+                pass
 
 
 def resolve_config_path() -> Path:

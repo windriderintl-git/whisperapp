@@ -61,6 +61,14 @@ _OUTPUT_LABELS = [
 
 _FALLBACK_MODELS = ["qwen2.5:3b", "qwen2.5:7b", "llama3.2:3b", "phi3:mini"]
 
+# Polish intensity: UI label <-> config value (lowercase).
+_POLISH_INTENSITY_LABELS = ["Light", "Standard", "Aggressive"]
+_POLISH_INTENSITY_TOOLTIPS = {
+    "Light": "Preserves every word. Only fixes punctuation.",
+    "Standard": "Removes filler (um, uh). Fixes sentence boundaries.",
+    "Aggressive": "Combines fragments. Rephrases for flow. Best for posts/essays.",
+}
+
 # Keys whose changes require an app restart to take effect.
 _RESTART_REQUIRED_KEYS = ("hotkey.modifiers", "whisper.model")
 
@@ -285,6 +293,17 @@ class _SettingsDialog:
         self.var_llm_enabled = tk.BooleanVar(
             value=bool(self._cfg.get("llm", {}).get("enabled", True)))
 
+        polish_raw = str(self._cfg.get("llm", {}).get("polish_intensity",
+                                                     "standard")).lower()
+        polish_label = {
+            "light": "Light",
+            "standard": "Standard",
+            "aggressive": "Aggressive",
+        }.get(polish_raw, "Standard")
+        self.var_polish_intensity = tk.StringVar(value=polish_label)
+        self.var_polish_tooltip = tk.StringVar(
+            value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
+
         ollama_host = self._cfg.get("llm", {}).get("host", "http://localhost:11434")
         self._ollama_models = _fetch_ollama_models(ollama_host)
         current_model = str(self._cfg.get("llm", {}).get("model", "qwen2.5:3b"))
@@ -295,7 +314,7 @@ class _SettingsDialog:
         self.var_autostart = tk.BooleanVar(value=_autostart_currently_enabled())
 
         self._build_ui()
-        self._size_and_center(460, 420)
+        self._size_and_center(460, 820)
 
         # Modal grab
         if parent is not None:
@@ -370,11 +389,81 @@ class _SettingsDialog:
                         variable=self.var_llm_enabled
                         ).grid(row=0, column=0, columnspan=2, sticky="w",
                                padx=8, pady=4)
-        ttk.Label(lf, text="Model:").grid(row=1, column=0, sticky="w",
+        ttk.Label(lf, text="Intensity:").grid(row=1, column=0, sticky="w",
+                                              padx=8, pady=4)
+        intensity_cb = ttk.Combobox(lf, textvariable=self.var_polish_intensity,
+                                    state="readonly",
+                                    values=_POLISH_INTENSITY_LABELS, width=16)
+        intensity_cb.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        intensity_cb.bind("<<ComboboxSelected>>", self._on_polish_intensity_changed)
+        ttk.Label(lf, textvariable=self.var_polish_tooltip,
+                  foreground="#666", wraplength=400
+                  ).grid(row=2, column=0, columnspan=2, sticky="w",
+                         padx=8, pady=(0, 6))
+        ttk.Label(lf, text="Model:").grid(row=3, column=0, sticky="w",
                                           padx=8, pady=4)
         ttk.Combobox(lf, textvariable=self.var_ollama_model, state="normal",
                      values=self._ollama_models, width=28
-                     ).grid(row=1, column=1, sticky="w", padx=8, pady=4)
+                     ).grid(row=3, column=1, sticky="w", padx=8, pady=4)
+
+        # Vocabulary ------------------------------------------------------
+        vf = ttk.LabelFrame(outer, text="Vocabulary corrections")
+        vf.pack(fill="both", expand=True, **pad)
+        ttk.Label(vf, text="Forced spelling fixes applied after polish. "
+                          "One canonical term per row; variants are matched "
+                          "case-insensitively.",
+                  foreground="#666", wraplength=410
+                  ).grid(row=0, column=0, columnspan=2, sticky="w",
+                         padx=8, pady=(4, 6))
+
+        tree_frame = ttk.Frame(vf)
+        tree_frame.grid(row=1, column=0, columnspan=2, sticky="nsew",
+                        padx=8, pady=4)
+        vf.columnconfigure(0, weight=1)
+        vf.rowconfigure(1, weight=1)
+
+        self.vocab_tree = ttk.Treeview(
+            tree_frame, columns=("canonical", "variants"),
+            show="headings", height=10, selectmode="browse")
+        self.vocab_tree.heading("canonical", text="Canonical")
+        self.vocab_tree.heading("variants", text="Variants")
+        # Column widths: 35% / 65% of ~410px usable width.
+        self.vocab_tree.column("canonical", width=143, anchor="w",
+                               stretch=False)
+        self.vocab_tree.column("variants", width=267, anchor="w",
+                               stretch=True)
+
+        vscroll = ttk.Scrollbar(tree_frame, orient="vertical",
+                                command=self.vocab_tree.yview)
+        self.vocab_tree.configure(yscrollcommand=vscroll.set)
+        self.vocab_tree.pack(side="left", fill="both", expand=True)
+        vscroll.pack(side="right", fill="y")
+
+        self.vocab_tree.bind("<Double-1>",
+                             lambda _e: self._on_vocab_edit())
+
+        # Populate from cfg.
+        vocab_cfg = self._cfg.get("vocabulary") or {}
+        if isinstance(vocab_cfg, dict):
+            for canon, variants in vocab_cfg.items():
+                canon_str = str(canon).strip()
+                if not canon_str:
+                    continue
+                if isinstance(variants, (list, tuple)):
+                    variants_str = ", ".join(str(v) for v in variants)
+                else:
+                    variants_str = str(variants) if variants else ""
+                self.vocab_tree.insert("", "end",
+                                       values=(canon_str, variants_str))
+
+        vbtns = ttk.Frame(vf)
+        vbtns.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+        ttk.Button(vbtns, text="Add row", command=self._on_vocab_add
+                   ).pack(side="left", padx=(0, 4))
+        ttk.Button(vbtns, text="Edit selected", command=self._on_vocab_edit
+                   ).pack(side="left", padx=4)
+        ttk.Button(vbtns, text="Remove selected", command=self._on_vocab_remove
+                   ).pack(side="left", padx=4)
 
         # Autostart --------------------------------------------------------
         af = ttk.LabelFrame(outer, text="Startup")
@@ -417,6 +506,132 @@ class _SettingsDialog:
             out = ["ctrl", "windows"]
         return out
 
+    def _collect_vocabulary(self) -> dict:
+        """Rebuild the vocabulary dict from the Treeview rows."""
+        result: dict[str, list[str]] = {}
+        for iid in self.vocab_tree.get_children(""):
+            vals = self.vocab_tree.item(iid, "values")
+            if not vals:
+                continue
+            canon = str(vals[0]).strip()
+            if not canon:
+                continue
+            raw_variants = str(vals[1]) if len(vals) > 1 else ""
+            variants = [v.strip() for v in raw_variants.split(",")]
+            variants = [v for v in variants if v]
+            result[canon] = variants
+        return result
+
+    # -- polish intensity -------------------------------------------------
+
+    def _on_polish_intensity_changed(self, _event=None) -> None:
+        label = self.var_polish_intensity.get()
+        tip = _POLISH_INTENSITY_TOOLTIPS.get(label, "")
+        self.var_polish_tooltip.set(tip)
+
+    # -- vocabulary actions -----------------------------------------------
+
+    def _on_vocab_add(self) -> None:
+        result = self._open_vocab_editor("Add vocabulary entry", "", "")
+        if result is None:
+            return
+        canon, variants = result
+        if not canon.strip():
+            return
+        self.vocab_tree.insert("", "end", values=(canon.strip(), variants))
+
+    def _on_vocab_edit(self) -> None:
+        sel = self.vocab_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        vals = self.vocab_tree.item(iid, "values")
+        canon_cur = str(vals[0]) if vals else ""
+        variants_cur = str(vals[1]) if vals and len(vals) > 1 else ""
+        result = self._open_vocab_editor("Edit vocabulary entry",
+                                         canon_cur, variants_cur)
+        if result is None:
+            return
+        canon, variants = result
+        if not canon.strip():
+            return
+        self.vocab_tree.item(iid, values=(canon.strip(), variants))
+
+    def _on_vocab_remove(self) -> None:
+        sel = self.vocab_tree.selection()
+        if not sel:
+            return
+        for iid in sel:
+            self.vocab_tree.delete(iid)
+
+    def _open_vocab_editor(self, title: str, canon: str,
+                           variants: str) -> Optional[tuple[str, str]]:
+        """Modal sub-dialog with two entry fields. Returns (canon, variants)
+        on OK, None on Cancel."""
+        top = tk.Toplevel(self.dialog)
+        top.title(title)
+        top.resizable(False, False)
+        top.transient(self.dialog)
+        try:
+            top.grab_set()
+        except tk.TclError:
+            pass
+
+        frm = ttk.Frame(top, padding=14)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Canonical spelling:").grid(
+            row=0, column=0, sticky="w", padx=4, pady=4)
+        var_canon = tk.StringVar(value=canon)
+        ent_canon = ttk.Entry(frm, textvariable=var_canon, width=40)
+        ent_canon.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+
+        ttk.Label(frm, text="Variants (comma-separated):").grid(
+            row=1, column=0, sticky="w", padx=4, pady=4)
+        var_variants = tk.StringVar(value=variants)
+        ent_variants = ttk.Entry(frm, textvariable=var_variants, width=40)
+        ent_variants.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+
+        result: dict[str, Optional[tuple[str, str]]] = {"value": None}
+
+        def on_ok() -> None:
+            result["value"] = (var_canon.get(), var_variants.get())
+            top.destroy()
+
+        def on_cancel() -> None:
+            result["value"] = None
+            top.destroy()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=on_cancel
+                   ).pack(side="right", padx=4)
+        ttk.Button(btns, text="OK", command=on_ok
+                   ).pack(side="right", padx=4)
+
+        top.protocol("WM_DELETE_WINDOW", on_cancel)
+        top.bind("<Return>", lambda _e: on_ok())
+        top.bind("<Escape>", lambda _e: on_cancel())
+
+        # Center over parent dialog.
+        top.update_idletasks()
+        try:
+            px = self.dialog.winfo_rootx()
+            py = self.dialog.winfo_rooty()
+            pw = self.dialog.winfo_width()
+            ph = self.dialog.winfo_height()
+            tw = top.winfo_width()
+            th = top.winfo_height()
+            x = px + max(0, (pw - tw) // 2)
+            y = py + max(0, (ph - th) // 3)
+            top.geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+
+        ent_canon.focus_set()
+        top.wait_window()
+        return result["value"]
+
     # -- actions ---------------------------------------------------------
 
     def _on_cancel(self) -> None:
@@ -454,6 +669,11 @@ class _SettingsDialog:
         model_name = self.var_ollama_model.get().strip()
         if model_name:
             llm["model"] = model_name
+        intensity_label = self.var_polish_intensity.get().strip() or "Standard"
+        llm["polish_intensity"] = intensity_label.lower()
+
+        # Vocabulary section is fully owned by this dialog.
+        cfg["vocabulary"] = self._collect_vocabulary()
 
         try:
             _write_config(cfg)

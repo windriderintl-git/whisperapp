@@ -21,6 +21,13 @@ audio:
 
 llm:
   enabled: true
+  # Polish intensity. Affects how aggressively the LLM rewrites your dictation.
+  #   light      - disfluency removal + punctuation only; preserves every word.
+  #   standard   - the default. Adds sentence-boundary fixes and light rephrasing
+  #                for clarity. Best for everyday notes and replies.
+  #   aggressive - combines fragments, drops empty hedges, tightens phrasing.
+  #                Best for long-form posts, essays, social writing.
+  polish_intensity: standard
   backend: ollama
   model: qwen2.5:3b
   host: http://localhost:11434

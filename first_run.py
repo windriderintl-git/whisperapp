@@ -22,6 +22,8 @@ def run_if_needed() -> bool:
     """Show the wizard if not previously completed. Returns True if OK to launch tray,
     False if the user closed the wizard early."""
     paths.ensure_user_dirs()
+    # Seed user-editable prompts before any UI; safe to call every launch.
+    paths.ensure_user_prompts()
     if paths.FIRSTRUN_FLAG.exists():
         return True
     completed = _show_wizard()
