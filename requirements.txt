@@ -1,0 +1,11 @@
+faster-whisper
+pyaudio
+keyboard
+pyautogui
+numpy
+pyperclip
+pyyaml
+pygetwindow
+pystray
+Pillow
+pywin32

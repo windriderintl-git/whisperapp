@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Build artifacts (PyInstaller / Inno Setup) ----
+build/pyinstaller/
+dist/
+
+# ---- First-run downloads (large, host-specific) ----
+# Populated by cuda_downloader.py / Inno Setup runtime; never check in.
+cuda/
+
+# ---- Generated icons (produced by tools/render_icons.py at build time) ----
+assets/icons/app.ico
+installer/app.ico
+
+# ---- Logs / state (should live in %APPDATA%, but be defensive) ----
+*.log
+.firstrun_done
+.firstrun_progress.json
+
+# ---- IDE / editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

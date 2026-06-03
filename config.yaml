@@ -1,0 +1,44 @@
+# Whisper 2.0 configuration.
+
+# Hotkey: Win+Ctrl hold = push-to-talk; double-tap = toggle continuous mode.
+hotkey:
+  modifiers: [ctrl, windows]
+  hold_threshold_ms: 350      # press shorter than this counts as a tap
+  double_tap_window_ms: 1200  # two taps within this window trigger continuous mode
+  debug: true                 # print press/release timings so you can tune the above
+
+whisper:
+  model: small.en             # tiny.en | base.en | small.en | medium.en
+  device: auto                # auto (tries cuda, falls back to cpu) | cpu | cuda
+  compute_type: auto          # auto -> int8 on cpu, float16 on cuda
+  beam_size: 1                # 1 = greedy (fastest). 5 = best accuracy.
+
+audio:
+  sample_rate: 16000
+  silence_threshold: 0.015
+  silence_duration_s: 1.5     # chunk boundary in continuous mode
+  min_chunk_duration_s: 0.5   # drop chunks shorter than this
+
+llm:
+  enabled: true
+  backend: ollama
+  model: qwen2.5:3b
+  host: http://localhost:11434
+  timeout_s: 8.0
+  warmup_on_start: true       # send a no-op request at launch so first dictation is fast
+  skip_below_words: 4         # skip polish for utterances shorter than this (commands etc.)
+
+context:
+  enabled: true               # auto-pick cleanup prompt from active window title
+  override: null              # set to a prompt name (e.g. cleanup_default) to force
+
+output:
+  mode: type                  # type | clipboard | terminal
+  trailing_space: true
+
+# Forced spelling/casing corrections applied after LLM polish.
+# Add canonical spellings here; variants are matched case-insensitively
+# and regex-escaped. Example below — replace with words you actually use.
+vocabulary:
+  # OpenAI: [open ai, openAI, openai]
+  # PostgreSQL: [postgres, postgre sql]

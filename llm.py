@@ -1,0 +1,110 @@
+"""Local LLM polish via Ollama. Falls back to raw text on any failure."""
+import json
+import time
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+import logging
+log = logging.getLogger("whisper2.llm")
+
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+_PROMPT_CACHE: dict[str, str] = {}
+
+
+def _load_prompt(name: str) -> str:
+    if name in _PROMPT_CACHE:
+        return _PROMPT_CACHE[name]
+    path = PROMPTS_DIR / f"{name}.md"
+    if not path.exists():
+        path = PROMPTS_DIR / "cleanup_default.md"
+    _PROMPT_CACHE[name] = path.read_text(encoding="utf-8")
+    return _PROMPT_CACHE[name]
+
+
+class OllamaPolisher:
+    def __init__(self, model: str = "qwen2.5:3b",
+                 host: str = "http://localhost:11434",
+                 timeout: float = 8.0, enabled: bool = True):
+        self.model = model
+        self.host = host.rstrip("/")
+        self.timeout = timeout
+        self.enabled = enabled
+        self._warned_unreachable = False
+
+    def polish(self, text: str, prompt_name: str = "cleanup_default") -> str:
+        if not self.enabled or not text.strip():
+            return text
+        try:
+            template = _load_prompt(prompt_name)
+            full = template.replace("{text}", text)
+            result = self._call(full)
+            return result if result else text
+        except Exception as e:
+            log.warning(f"[llm] polish failed: {e} — using raw text")
+            return text
+
+    def warmup(self):
+        """Send a tiny generation to load the model into RAM/VRAM.
+        Subsequent polish() calls hit the warm model with much lower latency.
+        Runs synchronously; call from a background thread if you don't want
+        to block startup.
+        """
+        if not self.enabled:
+            return
+        body = json.dumps({
+            "model": self.model,
+            "prompt": "ok",
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 1},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.host}/api/generate", data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=60.0) as resp:
+                resp.read()
+            log.info(f"[llm] warmup ok ({(time.time()-t0)*1000:.0f}ms)")
+        except Exception as e:
+            log.warning(f"[llm] warmup failed: {e}")
+
+    def _call(self, prompt: str) -> str | None:
+        body = json.dumps({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 768},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            elapsed = (time.time() - t0) * 1000
+            log.info(f"[llm] polish ok ({elapsed:.0f}ms)")
+            return _strip_wrapping(data.get("response", "").strip())
+        except (urllib.error.URLError, TimeoutError) as e:
+            if not self._warned_unreachable:
+                log.warning(f"[llm] Ollama unreachable at {self.host} ({e}). "
+                      f"Install from ollama.com and run: ollama pull {self.model}")
+                self._warned_unreachable = True
+            return None
+
+
+def _strip_wrapping(text: str) -> str:
+    """Models sometimes wrap output in quotes or code fences despite the prompt."""
+    t = text.strip()
+    for fence in ("```text", "```markdown", "```md", "```"):
+        if t.startswith(fence):
+            t = t[len(fence):].lstrip("\n")
+            if t.endswith("```"):
+                t = t[:-3].rstrip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in ('"', "'"):
+        t = t[1:-1]
+    return t.strip()
