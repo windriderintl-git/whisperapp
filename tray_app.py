@@ -77,6 +77,11 @@ class TrayController:
                 lambda _: "Resume" if self.app._paused else "Pause",
                 self._on_toggle_pause,
             ),
+            pystray.MenuItem(
+                lambda _: ("Stop continuous mode"
+                           if self.app.continuous_mode else "Start continuous mode"),
+                self._on_toggle_continuous,
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", self._on_settings),
             pystray.MenuItem("Open Log Folder", self._on_open_logs),
@@ -135,6 +140,12 @@ class TrayController:
             self.app.resume()
         else:
             self.app.pause()
+
+    def _on_toggle_continuous(self, icon, item):
+        try:
+            self.app.on_double_tap()
+        except Exception as e:
+            log.exception(f"toggle continuous failed: {e}")
 
     def _on_settings(self, icon, item):
         # Tk has to run on its own thread when invoked from a pystray callback;
@@ -199,8 +210,48 @@ def _fatal_dialog(message: str) -> None:
         pass
 
 
+def _info_dialog(message: str) -> None:
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        tk.messagebox.showinfo("Whisper 2", message)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _acquire_single_instance_lock():
+    """Claim a per-user named mutex. Returns the handle on success, or None
+    if another Whisper 2 instance already owns it. Windows auto-releases the
+    mutex when the process exits, so the returned handle just needs to stay
+    referenced for the lifetime of the process."""
+    try:
+        import win32event
+        import win32api
+        import winerror
+    except ImportError:
+        return True  # pywin32 missing (dev shell?); skip the check
+    handle = win32event.CreateMutex(None, False, "Whisper2-SingleInstance-v1")
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        return None
+    return handle
+
+
 def main():
     log.info("[tray] starting")
+
+    # Single-instance guard. Held for the lifetime of the process; Windows
+    # auto-releases on exit. Without this, a second launch fights the first
+    # for the keyboard hook and each dictation gets typed twice.
+    _instance_lock = _acquire_single_instance_lock()
+    if _instance_lock is None:
+        log.info("[tray] another instance is already running; exiting")
+        _info_dialog(
+            "Whisper 2 is already running.\n\n"
+            "Look for the microphone icon in your system tray "
+            "(bottom-right of the screen, may be hidden under the ^ arrow)."
+        )
+        return
 
     # First-run wizard gates everything else: it downloads CUDA wheels,
     # installs Ollama, and pulls the model. If the user cancels, exit cleanly.

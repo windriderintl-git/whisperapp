@@ -140,6 +140,8 @@ class App:
             self._beep(450, 90)
 
     def on_double_tap(self):
+        if self._paused:
+            return
         with self._lock:
             entering = not self.continuous_mode
             self.continuous_mode = entering

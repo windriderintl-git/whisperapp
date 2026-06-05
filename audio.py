@@ -61,6 +61,19 @@ class ContinuousAudioRecorder:
             except Exception as e:
                 log.error(f"[audio] failed to open stream: {e}")
                 self.recording = False
+                # PyAudio caches the device list at PyAudio() construction.
+                # If the mic was plugged in / turned on AFTER we constructed
+                # this instance, p.open() will keep failing until we reinit.
+                # Rebuild so the next start_recording() sees current devices.
+                try:
+                    self.p.terminate()
+                except Exception:
+                    pass
+                try:
+                    self.p = pyaudio.PyAudio()
+                    log.info("[audio] reinitialized PyAudio after open failure")
+                except Exception as ee:
+                    log.error(f"[audio] PyAudio reinit failed: {ee}")
                 return
             self._thread = threading.Thread(target=self._record_loop,
                                             args=(self.stream,), daemon=True)
