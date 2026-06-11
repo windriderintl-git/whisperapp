@@ -5,7 +5,7 @@ echo.
 python --version >nul 2>&1
 if errorlevel 1 goto :no_python
 
-python -c "import keyboard, yaml, pygetwindow" >nul 2>&1
+python -c "import keyboard, yaml, pystray" >nul 2>&1
 if errorlevel 1 goto :install_deps
 goto :check_ollama
 

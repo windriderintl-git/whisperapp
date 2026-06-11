@@ -1,11 +1,12 @@
-faster-whisper
-pyaudio
-keyboard
-pyautogui
-numpy
-pyperclip
-pyyaml
-pygetwindow
-pystray
-Pillow
-pywin32
+# Compatible-range pins: protects against breaking releases and supply-chain
+# surprises without freezing bugfix updates. Must satisfy Python 3.12 and 3.13.
+faster-whisper>=1.1,<2
+pyaudio>=0.2.14,<0.3
+keyboard>=0.13.5,<0.14
+pyautogui>=0.9.54,<1
+numpy>=1.26,<3
+pyperclip>=1.9,<2
+pyyaml>=6.0,<7
+pystray>=0.19.5,<0.20
+Pillow>=10,<12
+pywin32>=306

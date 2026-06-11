@@ -143,8 +143,15 @@ from faster_whisper import WhisperModel  # noqa: E402  (must come after DLL setu
 class Transcriber:
     def __init__(self, model_size: str = "small.en",
                  device: str = "auto", compute_type: str = "auto",
-                 beam_size: int = 1):
+                 beam_size: int = 1, vad_filter: bool = True,
+                 vad_min_silence_ms: int = 500,
+                 condition_on_previous_text: bool = False):
         self.beam_size = beam_size
+        self.vad_filter = vad_filter
+        self.vad_min_silence_ms = vad_min_silence_ms
+        # We pass our own initial_prompt; conditioning on prior segments within
+        # an utterance causes repetition loops on short dictation.
+        self.condition_on_previous_text = condition_on_previous_text
         self.model = self._load(model_size, device, compute_type)
 
     @staticmethod
@@ -181,5 +188,9 @@ class Transcriber:
             audio_data,
             beam_size=self.beam_size,
             initial_prompt=initial_prompt,
+            vad_filter=self.vad_filter,
+            vad_parameters=({"min_silence_duration_ms": self.vad_min_silence_ms}
+                            if self.vad_filter else None),
+            condition_on_previous_text=self.condition_on_previous_text,
         )
         return " ".join(s.text.strip() for s in segments).strip()

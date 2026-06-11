@@ -74,7 +74,7 @@ _TITLE_RULES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _get_active_window_info() -> tuple[str, str]:
+def get_active_window_info() -> tuple[str, str]:
     """Returns (process_basename_no_ext, window_title). Empty strings on failure."""
     if not sys.platform.startswith("win"):
         return "", ""
@@ -127,19 +127,28 @@ _TITLE_FIRST_RULES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def select_prompt(override: str | None = None) -> tuple[str, str]:
-    """Return (prompt_name, source_description)."""
+def select_prompt_for(proc: str, title: str, override: str | None = None) -> str:
+    """Pure rule matching on an already-captured (proc, title) pair, so the
+    window can be sampled at recording start (when the user was focused on
+    the target app) rather than at transcription time."""
     if override:
-        return override, "(override)"
-    proc, title = _get_active_window_info()
-    src = f"{proc or '?'} | {title[:60]}" if (proc or title) else "(no window)"
+        return override
     for pattern, prompt in _TITLE_FIRST_RULES:
         if pattern.search(title):
-            return prompt, src
+            return prompt
     for pattern, prompt in _PROCESS_RULES:
         if pattern.search(proc):
-            return prompt, src
+            return prompt
     for pattern, prompt in _TITLE_RULES:
         if pattern.search(title):
-            return prompt, src
-    return DEFAULT_PROMPT, src
+            return prompt
+    return DEFAULT_PROMPT
+
+
+def select_prompt(override: str | None = None) -> tuple[str, str]:
+    """Live-query convenience wrapper. Returns (prompt_name, source_description)."""
+    if override:
+        return override, "(override)"
+    proc, title = get_active_window_info()
+    src = f"{proc or '?'} | {title[:60]}" if (proc or title) else "(no window)"
+    return select_prompt_for(proc, title), src

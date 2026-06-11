@@ -1,4 +1,5 @@
 """Whisper 2.0 system-tray entry point."""
+import functools
 import os
 import sys
 import threading
@@ -7,6 +8,7 @@ import tkinter.messagebox
 import yaml
 from pathlib import Path
 
+import pyperclip
 from PIL import Image, ImageDraw
 import pystray
 
@@ -82,6 +84,7 @@ class TrayController:
                            if self.app.continuous_mode else "Start continuous mode"),
                 self._on_toggle_continuous,
             ),
+            pystray.MenuItem("Recent", pystray.Menu(self._recent_items)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", self._on_settings),
             pystray.MenuItem("Open Log Folder", self._on_open_logs),
@@ -90,6 +93,28 @@ class TrayController:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._on_quit),
         )
+
+    def _recent_items(self):
+        """Last few transcripts, newest first; click to re-copy. In-memory
+        only — history is never written to disk. update_menu() runs on every
+        status change, so this refreshes after each dictation for free."""
+        items = list(self.app.history)
+        if not items:
+            return [pystray.MenuItem("(nothing yet)", None, enabled=False)]
+        return [
+            pystray.MenuItem(
+                t[:48] + ("…" if len(t) > 48 else ""),
+                functools.partial(self._on_recopy, t),
+            )
+            for t in reversed(items)
+        ]
+
+    def _on_recopy(self, text, icon, item):
+        try:
+            pyperclip.copy(text)
+            self.icon.notify("Copied to clipboard.", "Whisper 2")
+        except Exception as e:
+            log.warning(f"recopy failed: {e}")
 
     def _status_label(self) -> str:
         # human-readable

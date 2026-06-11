@@ -60,7 +60,9 @@ def wait_until_running(timeout_s: float = 90.0) -> bool:
 
 
 def download_installer(progress: ProgressFn | None = None) -> Path:
-    dest = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
+    # Fresh private directory, not the shared %TEMP% root: a predictable path
+    # there could be pre-planted or swapped by another local process.
+    dest = Path(tempfile.mkdtemp(prefix="whisper2-ollama-")) / "OllamaSetup.exe"
     log.info(f"[ollama] downloading installer to {dest}")
     with urllib.request.urlopen(OLLAMA_INSTALLER_URL, timeout=60.0) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
@@ -77,10 +79,40 @@ def download_installer(progress: ProgressFn | None = None) -> Path:
     return dest
 
 
+def _verify_authenticode(path: Path) -> None:
+    """Refuse to run the installer unless its Authenticode signature is valid
+    and the signer is Ollama. Get-AuthenticodeSignature is a cmdlet, so it
+    works regardless of PowerShell execution policy."""
+    ps = (
+        f"$sig = Get-AuthenticodeSignature -LiteralPath '{path}'; "
+        "$sig.Status.ToString(); "
+        "if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=60,
+        )
+        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        status = lines[0] if lines else ""
+        subject = lines[1] if len(lines) > 1 else ""
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"Could not verify Ollama installer signature: {e}")
+    if result.returncode != 0 or status != "Valid" or "ollama" not in subject.lower():
+        raise RuntimeError(
+            "Ollama installer failed signature verification "
+            f"(status={status or 'unknown'}, signer={subject or 'unknown'}). "
+            "Refusing to run it. Install Ollama manually from https://ollama.com."
+        )
+    log.info(f"[ollama] installer signature valid ({subject})")
+
+
 def install_silent(installer_path: Path | None = None,
                    progress: ProgressFn | None = None) -> None:
-    """Download (if needed) and run OllamaSetup.exe /SILENT. Blocks until done."""
+    """Download (if needed), verify the signature, and run OllamaSetup.exe
+    /SILENT. Blocks until done."""
     p = installer_path or download_installer(progress=progress)
+    _verify_authenticode(p)
     log.info(f"[ollama] running {p.name} /SILENT")
     subprocess.run([str(p), "/SILENT"], check=True)
     if not wait_until_running(90.0):

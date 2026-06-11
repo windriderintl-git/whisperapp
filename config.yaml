@@ -12,6 +12,9 @@ whisper:
   device: auto                # auto (tries cuda, falls back to cpu) | cpu | cuda
   compute_type: auto          # auto -> int8 on cpu, float16 on cuda
   beam_size: 1                # 1 = greedy (fastest). 5 = best accuracy.
+  vad_filter: true            # trim silence with Silero VAD before transcribing
+  vad_min_silence_ms: 500     # raise this if very short utterances get dropped
+  condition_on_previous_text: false  # true can cause repetition loops on short dictation
 
 audio:
   sample_rate: 16000
@@ -33,6 +36,9 @@ llm:
   host: http://localhost:11434
   timeout_s: 8.0
   warmup_on_start: true       # send a no-op request at launch so first dictation is fast
+  keep_alive: 30m             # keep the model loaded in (V)RAM between dictations;
+                              # without this Ollama unloads after ~5 min idle and the
+                              # next dictation pays a multi-second cold start
   skip_below_words: 4         # skip polish for utterances shorter than this (commands etc.)
 
 context:
@@ -42,6 +48,9 @@ context:
 output:
   mode: type                  # type | clipboard | terminal
   trailing_space: true
+  restore_clipboard: true     # put your previous clipboard back after pasting
+  restore_delay_ms: 300       # raise this if an app that reads the clipboard
+                              # asynchronously (some Electron apps) loses the paste
 
 # Forced spelling/casing corrections applied after LLM polish.
 # Add canonical spellings here; variants are matched case-insensitively

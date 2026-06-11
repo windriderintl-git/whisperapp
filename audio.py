@@ -22,7 +22,7 @@ class ContinuousAudioRecorder:
 
     def __init__(self, chunk=1024, format=pyaudio.paInt16, channels=1, rate=16000,
                  silence_threshold=0.015, silence_duration=1.5,
-                 min_chunk_duration_s=0.5):
+                 min_chunk_duration_s=0.5, ctx_provider=None):
         self.chunk = chunk
         self.format = format
         self.channels = channels
@@ -30,7 +30,12 @@ class ContinuousAudioRecorder:
         self.p = pyaudio.PyAudio()
         self.recording = False
         self.stream = None
-        self.audio_queue = queue.Queue()
+        # Bounded so a stalled consumer can't grow memory without limit;
+        # on overflow the oldest chunk is dropped (newest speech wins).
+        self.audio_queue = queue.Queue(maxsize=8)
+        # Optional callable sampled when a chunk is queued; its return value
+        # travels with the audio as (audio, ctx). Used for window context.
+        self._ctx_provider = ctx_provider
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.min_chunk_duration_s = min_chunk_duration_s
@@ -117,7 +122,7 @@ class ContinuousAudioRecorder:
                 silence_frames += 1
                 if silence_frames >= max_silence_frames:
                     if len(frames) > min_frames:
-                        self.audio_queue.put(self._to_float32(frames))
+                        self._put_chunk(frames)
                     frames = []
                     silence_frames = 0
 
@@ -133,7 +138,28 @@ class ContinuousAudioRecorder:
                 self.stream = None
 
         if frames and not self._discard_on_stop and len(frames) > min_frames:
-            self.audio_queue.put(self._to_float32(frames))
+            self._put_chunk(frames)
+
+    def _put_chunk(self, frames: list[bytes]) -> None:
+        ctx = None
+        if self._ctx_provider is not None:
+            try:
+                ctx = self._ctx_provider()
+            except Exception as e:
+                log.warning(f"[audio] ctx_provider failed: {e}")
+        item = (self._to_float32(frames), ctx)
+        try:
+            self.audio_queue.put_nowait(item)
+        except queue.Full:
+            log.warning("[audio] queue full; dropping oldest chunk")
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.audio_queue.put_nowait(item)
+            except queue.Full:
+                pass
 
     @staticmethod
     def _to_float32(frames: list[bytes]) -> np.ndarray:

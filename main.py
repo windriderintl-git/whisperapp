@@ -5,6 +5,7 @@ Hotkey:
     Double-tap Ctrl+Win quickly   -> toggle continuous mode (records until you double-tap again)
 """
 import argparse
+import collections
 import logging
 import queue
 import re
@@ -21,7 +22,7 @@ import yaml
 
 import logging_config
 from audio import ContinuousAudioRecorder
-from context import select_prompt
+from context import get_active_window_info, select_prompt_for
 from hotkey import ComboController
 from llm import OllamaPolisher
 from transcribe import Transcriber
@@ -52,23 +53,30 @@ class App:
             silence_threshold=a["silence_threshold"],
             silence_duration=a["silence_duration_s"],
             min_chunk_duration_s=a["min_chunk_duration_s"],
+            ctx_provider=self._window_ctx,
         )
         w = config["whisper"]
         self.transcriber = Transcriber(
             model_size=w["model"],
             device=w.get("device", "auto"),
             compute_type=w.get("compute_type", "auto"),
-            beam_size=w.get("beam_size", 5),
+            beam_size=w.get("beam_size", 1),
+            vad_filter=w.get("vad_filter", True),
+            vad_min_silence_ms=w.get("vad_min_silence_ms", 500),
+            condition_on_previous_text=w.get("condition_on_previous_text", False),
         )
         l = config["llm"]
         self.polisher = OllamaPolisher(
             model=l["model"], host=l["host"],
             timeout=l["timeout_s"], enabled=l.get("enabled", True),
             polish_intensity=l.get("polish_intensity", "standard"),
+            keep_alive=l.get("keep_alive", "30m"),
         )
         self.skip_polish_below = int(l.get("skip_below_words", 0))
         self.output_mode = config["output"]["mode"]
         self.trailing_space = config["output"].get("trailing_space", True)
+        self.restore_clipboard = config["output"].get("restore_clipboard", True)
+        self.restore_delay_ms = int(config["output"].get("restore_delay_ms", 300))
         self.vocab = config.get("vocabulary", {}) or {}
         self.context_enabled = config["context"].get("enabled", True)
         self.context_override = config["context"].get("override")
@@ -77,9 +85,13 @@ class App:
             threading.Thread(target=self.polisher.warmup, daemon=True).start()
 
         self.last_transcript = ""
+        self.history: collections.deque[str] = collections.deque(maxlen=10)
         self.continuous_mode = False
         self.in_ptt = False
         self._lock = threading.Lock()
+        # Window snapshot taken at hotkey press (PTT) so context reflects the
+        # app the user was dictating into, not whatever has focus later.
+        self._ctx_snapshot: Optional[tuple[str, str]] = None
 
         # Lifecycle / status plumbing for tray + CLI shared use.
         self._controller: Optional[ComboController] = None
@@ -90,6 +102,12 @@ class App:
 
         self._consumer_thread = threading.Thread(target=self._consume_audio, daemon=True)
         self._consumer_thread.start()
+        # Single emit worker: pasting stays FIFO across continuous-mode chunks
+        # while transcription of the next chunk no longer waits on the
+        # clipboard + paste + restore sequence of the previous one.
+        self._emit_queue: queue.Queue = queue.Queue()
+        self._emit_thread = threading.Thread(target=self._emit_worker, daemon=True)
+        self._emit_thread.start()
 
     # ----- status -----
 
@@ -113,11 +131,19 @@ class App:
                 pass
         threading.Thread(target=_do, daemon=True).start()
 
+    def _window_ctx(self) -> tuple[str, str]:
+        """Context for the chunk being queued. PTT uses the snapshot taken at
+        hotkey press; continuous mode queries live since the user may have
+        moved between windows mid-session."""
+        snap = self._ctx_snapshot
+        return snap if snap is not None else get_active_window_info()
+
     def on_capture_start(self):
         with self._lock:
             if self.continuous_mode or self.in_ptt:
                 return
             self.in_ptt = True
+        self._ctx_snapshot = get_active_window_info()
         self._beep(700, 100)
         self.recorder.start_recording(single_shot=True)
         if not self.recorder.recording:
@@ -146,6 +172,7 @@ class App:
             entering = not self.continuous_mode
             self.continuous_mode = entering
         if entering:
+            self._ctx_snapshot = None    # continuous mode: query window live per chunk
             self._beep(800, 90)
             self._beep(950, 90)
             self.recorder.start_recording(single_shot=False)
@@ -169,17 +196,17 @@ class App:
     def _consume_audio(self):
         while not self._stop_consumer.is_set():
             try:
-                audio = self.recorder.audio_queue.get(timeout=0.5)
+                audio, ctx = self.recorder.audio_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                self._process_audio(audio)
+                self._process_audio(audio, ctx)
             except Exception as e:
                 log.error(f"[error] processing chunk: {e}")
             finally:
                 self.recorder.audio_queue.task_done()
 
-    def _process_audio(self, audio):
+    def _process_audio(self, audio, ctx=None):
         self._notify("transcribing")
         prompt_ctx = self.last_transcript[-200:] if self.last_transcript else None
         t0 = time.time()
@@ -187,13 +214,18 @@ class App:
         if not raw:
             self._notify("idle")
             return
-        log.info(f"[asr] {(time.time()-t0)*1000:.0f}ms -> {raw!r}")
-
         word_count = len(raw.split())
+        # Transcript content is sensitive (passwords, PII); it only reaches the
+        # log file at DEBUG level (--debug), never at INFO.
+        log.info(f"[asr] {(time.time()-t0)*1000:.0f}ms, {word_count} words")
+        log.debug(f"[asr] text: {raw!r}")
+
         if self.polisher.enabled and word_count >= self.skip_polish_below:
             override = self.context_override if self.context_enabled else "cleanup_default"
-            prompt_name, source = select_prompt(override)
-            log.info(f"[ctx] {prompt_name}  <- {source!r}")
+            proc, title = ctx if ctx is not None else get_active_window_info()
+            prompt_name = select_prompt_for(proc, title, override)
+            log.info(f"[ctx] {prompt_name}  <- proc={proc or '?'}")
+            log.debug(f"[ctx] window title: {title[:60]!r}")
             self._notify("polishing")
             was_unreachable = self.polisher._warned_unreachable
             polished = self.polisher.polish(raw, prompt_name=prompt_name)
@@ -206,22 +238,49 @@ class App:
 
         polished = apply_vocabulary(polished, self.vocab)
         self.last_transcript = polished
-        self._emit(polished)
+        self.history.append(polished)
+        self._emit_queue.put(polished)
         self._notify("idle")
+
+    def _emit_worker(self):
+        while not self._stop_consumer.is_set():
+            try:
+                text = self._emit_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._emit(text)
+            except Exception as e:
+                log.error(f"[error] emitting text: {e}")
+            finally:
+                self._emit_queue.task_done()
 
     def _emit(self, text: str):
         if self.output_mode == "terminal":
-            log.info(f"\n{'='*60}\n{text}\n{'='*60}\n")
+            # print, not log: transcript text must not reach the log file.
+            print(f"\n{'='*60}\n{text}\n{'='*60}\n")
             return
         payload = text + (" " if self.trailing_space else "")
         if self.output_mode == "clipboard":
             pyperclip.copy(text)
             log.info("[out] copied")
         else:
+            old = None
+            if self.restore_clipboard:
+                try:
+                    old = pyperclip.paste()
+                except Exception:
+                    old = None    # non-text clipboard; skip restore
             pyperclip.copy(payload)
             time.sleep(0.05)
             pyautogui.hotkey("ctrl", "v")
             log.info("[out] typed")
+            if self.restore_clipboard and old is not None and old != payload:
+                time.sleep(self.restore_delay_ms / 1000)
+                try:
+                    pyperclip.copy(old)
+                except Exception:
+                    pass
 
     # ----- lifecycle -----
 

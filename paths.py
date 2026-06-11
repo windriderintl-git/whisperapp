@@ -25,6 +25,9 @@ INSTALL_DIR = _install_dir()
 # User-writable area for config, logs, first-run progress.
 USER_DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 LOG_DIR = USER_DATA_DIR / "logs"
+# Download cache for first-run artifacts (CUDA wheels). Lives under the user
+# profile, not the shared %TEMP%, so other local users can't pre-plant files.
+DOWNLOAD_CACHE_DIR = USER_DATA_DIR / "cache"
 CONFIG_PATH = USER_DATA_DIR / "config.yaml"
 FIRSTRUN_FLAG = USER_DATA_DIR / ".firstrun_done"
 FIRSTRUN_PROG = USER_DATA_DIR / ".firstrun_progress.json"

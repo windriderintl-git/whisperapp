@@ -58,12 +58,16 @@ class OllamaPolisher:
     def __init__(self, model: str = "qwen2.5:3b",
                  host: str = "http://localhost:11434",
                  timeout: float = 8.0, enabled: bool = True,
-                 polish_intensity: str = "standard"):
+                 polish_intensity: str = "standard",
+                 keep_alive: str = "30m"):
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
         self.enabled = enabled
         self.polish_intensity = polish_intensity
+        # Without keep_alive Ollama unloads the model after ~5 min idle and
+        # every dictation after a pause pays a multi-second cold start.
+        self.keep_alive = keep_alive
         self._warned_unreachable = False
 
     def polish(self, text: str, prompt_name: str = "cleanup_default") -> str:
@@ -72,7 +76,10 @@ class OllamaPolisher:
         try:
             template = _load_prompt(prompt_name, self.polish_intensity)
             full = template.replace("{text}", text)
-            result = self._call(full)
+            # Cleaned output is never much longer than the input; cap generation
+            # accordingly instead of always allowing 768 tokens.
+            num_predict = max(64, min(768, int(len(text.split()) * 2.5)))
+            result = self._call(full, num_predict)
             return result if result else text
         except Exception as e:
             log.warning(f"[llm] polish failed: {e} — using raw text")
@@ -90,6 +97,7 @@ class OllamaPolisher:
             "model": self.model,
             "prompt": "ok",
             "stream": False,
+            "keep_alive": self.keep_alive,
             "options": {"temperature": 0.0, "num_predict": 1},
         }).encode("utf-8")
         req = urllib.request.Request(
@@ -104,12 +112,13 @@ class OllamaPolisher:
         except Exception as e:
             log.warning(f"[llm] warmup failed: {e}")
 
-    def _call(self, prompt: str) -> str | None:
+    def _call(self, prompt: str, num_predict: int = 768) -> str | None:
         body = json.dumps({
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 768},
+            "keep_alive": self.keep_alive,
+            "options": {"temperature": 0.0, "num_predict": num_predict},
         }).encode("utf-8")
         req = urllib.request.Request(
             f"{self.host}/api/generate",
