@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import paths
+
 log = logging.getLogger("whisper2.ollama_setup")
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
@@ -55,13 +57,27 @@ def start_serve_detached() -> None:
         else:
             cmd, flags = ["ollama", "serve"], CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         subprocess.Popen(
-            cmd, creationflags=flags,
+            cmd, creationflags=flags, env=_clean_env(),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             close_fds=True,
         )
         log.info(f"[ollama] started via {Path(cmd[0]).name}")
     except OSError as e:
         log.warning(f"[ollama] start_serve_detached failed: {e}")
+
+
+def _clean_env() -> dict:
+    """Environment for spawned Ollama processes with our DLL search paths
+    stripped from PATH. The frozen app's PATH includes _internal/ and cuda/
+    dirs; a model runner that inherits it resolves msvcp140/CUDA DLLs from
+    OUR install dir, keeps them locked, and breaks in-place upgrades."""
+    env = os.environ.copy()
+    install = str(paths.INSTALL_DIR).lower()
+    env["PATH"] = os.pathsep.join(
+        p for p in env.get("PATH", "").split(os.pathsep)
+        if p and install not in p.lower()
+    )
+    return env
 
 
 def wait_until_running(timeout_s: float = 90.0) -> bool:

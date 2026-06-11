@@ -2,7 +2,7 @@
 ; Build with: build\build.bat (calls iscc).
 
 #define MyAppName       "Whisper 2"
-#define MyAppVersion    "2.2.2"
+#define MyAppVersion    "2.2.3"
 #define MyAppPublisher  "Robert AIIMN"
 #define MyAppExeName    "Whisper2.exe"
 #define MyAppId         "{{C2A4E1C1-A1A2-4F4F-9F6E-67A0D0F2B3C1}"
@@ -55,4 +55,18 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; \
 
 [UninstallRun]
 ; Make sure the tray process is dead before files are deleted.
-Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden
+Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; \
+    RunOnceId: "KillTray"
+
+[Code]
+// Kill the running tray app before upgrading, so its files aren't locked.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Give Windows a moment to release file locks after process exit.
+  Sleep(1000);
+  Result := '';
+end;
