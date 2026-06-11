@@ -59,30 +59,39 @@ class ContinuousAudioRecorder:
             self._discard_on_stop = False
             self._single_shot = single_shot
             try:
-                self.stream = self.p.open(
-                    format=self.format, channels=self.channels, rate=self.rate,
-                    input=True, frames_per_buffer=self.chunk,
-                )
+                self.stream = self._open_stream_with_retry()
             except Exception as e:
                 log.error(f"[audio] failed to open stream: {e}")
                 self.recording = False
-                # PyAudio caches the device list at PyAudio() construction.
-                # If the mic was plugged in / turned on AFTER we constructed
-                # this instance, p.open() will keep failing until we reinit.
-                # Rebuild so the next start_recording() sees current devices.
-                try:
-                    self.p.terminate()
-                except Exception:
-                    pass
-                try:
-                    self.p = pyaudio.PyAudio()
-                    log.info("[audio] reinitialized PyAudio after open failure")
-                except Exception as ee:
-                    log.error(f"[audio] PyAudio reinit failed: {ee}")
                 return
             self._thread = threading.Thread(target=self._record_loop,
                                             args=(self.stream,), daemon=True)
             self._thread.start()
+
+    def _open_stream_with_retry(self):
+        """Open the input stream, retrying once after a PyAudio reinit.
+
+        PyAudio caches the device list at PyAudio() construction, so the very
+        first open after launch (or after a device change) can fail with a
+        stale list. Without the immediate retry, the first push-to-talk or
+        continuous-mode attempt after startup eats the failure and only the
+        NEXT attempt works."""
+        try:
+            return self.p.open(
+                format=self.format, channels=self.channels, rate=self.rate,
+                input=True, frames_per_buffer=self.chunk,
+            )
+        except Exception as e:
+            log.warning(f"[audio] stream open failed ({e}); reinitializing PyAudio and retrying")
+            try:
+                self.p.terminate()
+            except Exception:
+                pass
+            self.p = pyaudio.PyAudio()
+            return self.p.open(
+                format=self.format, channels=self.channels, rate=self.rate,
+                input=True, frames_per_buffer=self.chunk,
+            )
 
     def stop_recording(self, discard: bool = False):
         with self._state_lock:

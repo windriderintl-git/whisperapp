@@ -25,6 +25,18 @@ def run_if_needed() -> bool:
     # Seed user-editable prompts before any UI; safe to call every launch.
     paths.ensure_user_prompts()
     if paths.FIRSTRUN_FLAG.exists():
+        # Progress lives in %APPDATA% but CUDA DLLs live next to the install,
+        # so a wizard completed for one install (e.g. running from source)
+        # doesn't put DLLs where THIS install looks. Verify and re-run the
+        # GPU step if they're missing; otherwise transcription silently
+        # falls back to CPU.
+        state = _Progress.load()
+        if state.want_gpu and state.gpu_wheels_done \
+                and not any(paths.CUDA_BIN_DIR.glob("*.dll")):
+            log.info("[firstrun] CUDA DLLs missing for this install; re-running GPU step")
+            state.gpu_wheels_done = False
+            state.save()
+            return _show_wizard()
         return True
     completed = _show_wizard()
     if completed:

@@ -81,8 +81,9 @@ class App:
         self.context_enabled = config["context"].get("enabled", True)
         self.context_override = config["context"].get("override")
 
-        if l.get("warmup_on_start", False) and self.polisher.enabled:
-            threading.Thread(target=self.polisher.warmup, daemon=True).start()
+        self._warmup_on_start = l.get("warmup_on_start", False)
+        if self.polisher.enabled:
+            threading.Thread(target=self._ensure_llm_ready, daemon=True).start()
 
         self.last_transcript = ""
         self.history: collections.deque[str] = collections.deque(maxlen=10)
@@ -108,6 +109,25 @@ class App:
         self._emit_queue: queue.Queue = queue.Queue()
         self._emit_thread = threading.Thread(target=self._emit_worker, daemon=True)
         self._emit_thread.start()
+
+    def _ensure_llm_ready(self):
+        """Background: auto-start Ollama if installed but not running, then
+        warm the model. Without this, a reboot leaves Ollama down and every
+        dictation silently falls back to raw, unpolished text."""
+        try:
+            import ollama_setup
+            if not ollama_setup.is_running():
+                ollama_setup.start_serve_detached()
+                if not ollama_setup.wait_until_running(20.0):
+                    log.warning("[llm] Ollama not reachable after autostart; "
+                                "polish will fall back to raw text")
+                    return
+                log.info("[llm] Ollama autostarted")
+        except Exception as e:
+            log.warning(f"[llm] Ollama autostart failed: {e}")
+            return
+        if self._warmup_on_start:
+            self.polisher.warmup()
 
     # ----- status -----
 
