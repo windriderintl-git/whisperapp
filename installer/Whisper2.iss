@@ -2,7 +2,7 @@
 ; Build with: build\build.bat (calls iscc).
 
 #define MyAppName       "Whisper 2"
-#define MyAppVersion    "2.2.1"
+#define MyAppVersion    "2.2.2"
 #define MyAppPublisher  "Robert AIIMN"
 #define MyAppExeName    "Whisper2.exe"
 #define MyAppId         "{{C2A4E1C1-A1A2-4F4F-9F6E-67A0D0F2B3C1}"

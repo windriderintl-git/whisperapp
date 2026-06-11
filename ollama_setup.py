@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -34,18 +35,31 @@ def is_running(timeout: float = 1.0) -> bool:
 
 
 def start_serve_detached() -> None:
-    """If installed but not running, kick off `ollama serve` as a detached child."""
+    """If installed but not running, start Ollama without flashing console
+    windows. Prefer the desktop tray app (a GUI binary that manages serve
+    itself); fall back to `ollama serve` with CREATE_NO_WINDOW.
+
+    DETACHED_PROCESS must NOT be used here: ollama.exe is a console binary
+    that spawns console children (GPU probes, model runners), and with a
+    detached parent each child opens its own visible console window —
+    a storm of cmd windows on every model load."""
     if not is_installed():
         return
     CREATE_NEW_PROCESS_GROUP = 0x00000200
-    DETACHED_PROCESS = 0x00000008
+    CREATE_NO_WINDOW = 0x08000000
+    app_exe = (Path(os.environ.get("LOCALAPPDATA", ""))
+               / "Programs" / "Ollama" / "ollama app.exe")
     try:
+        if app_exe.is_file():
+            cmd, flags = [str(app_exe)], CREATE_NEW_PROCESS_GROUP
+        else:
+            cmd, flags = ["ollama", "serve"], CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         subprocess.Popen(
-            ["ollama", "serve"],
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            cmd, creationflags=flags,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             close_fds=True,
         )
+        log.info(f"[ollama] started via {Path(cmd[0]).name}")
     except OSError as e:
         log.warning(f"[ollama] start_serve_detached failed: {e}")
 
