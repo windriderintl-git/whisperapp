@@ -18,8 +18,34 @@ If Ollama is unreachable, you get raw Whisper output — the app degrades gracef
 |---|---|
 | **Hold** `Ctrl + Win` | Push-to-talk. Record while held, transcribe on release. |
 | **Double-tap** `Ctrl + Win` (within 400ms) | Toggle continuous mode. Double-tap again to stop. |
+| **Hold** `Ctrl + Alt` | Edit mode. Highlight text first, then speak an instruction to rewrite it in place. |
 
-A short single tap by itself does nothing. Thresholds live in `config.yaml`.
+A short single tap by itself does nothing. Thresholds and modifiers live in `config.yaml`.
+
+## Edit mode
+
+Highlight some text in any app, then **hold `Ctrl + Alt`** and speak an instruction — "make this more formal", "turn this into bullet points", "summarize", "fix the grammar". On release, a local LLM rewrites the selection and pastes the result over your highlight. Your previous clipboard is restored afterward, and if anything fails the original selection is left untouched.
+
+Configure it under `edit_mode:` (enable/disable, modifier keys, hold threshold) or toggle it in **Settings → Edit mode**.
+
+## Voice commands
+
+Spoken control phrases are pulled out of the transcript before polish so they're never rewritten into prose:
+
+- **"press enter" / "send" / "submit"** — pastes your text, then presses Enter (great for chat apps).
+- **"new line" / "new paragraph"** — inserts a line break / blank line inline.
+- **"press tab" / "press escape"** — presses that key after pasting.
+- **"scratch that" / "never mind" / "cancel that"** — discards the whole utterance.
+
+Toggle with `commands.enabled` in `config.yaml` or **Settings → Voice commands**.
+
+## Snippets
+
+Spoken trigger phrases expand to canned text after polish — say "my email" and get your address typed out. Add them under `snippets:` in `config.yaml` (`trigger: expansion`, one per line) or via the **Settings → Snippets** editor. Longer triggers win over shorter ones, and matching is case-insensitive on word boundaries. Toggle the whole feature with `snippets.enabled`.
+
+## On-screen HUD
+
+A small, always-on-top status pill mirrors the current state (recording / transcribing / polishing / editing). It never steals focus and is click-through, so it won't interfere with pasting. Control it with `ui.overlay` (on/off) and `ui.overlay_position` (`bottom`, `top`, or `cursor`), or in **Settings → On-screen HUD**.
 
 ## Quick start
 
@@ -38,6 +64,10 @@ Everything is in `config.yaml`. Common changes:
 - **GPU** — leave `device: auto`; it picks CUDA if available.
 - **Disable LLM polish** — `llm.enabled: false`, or run `python main.py --no-llm`.
 - **Vocabulary** — add canonical spellings under `vocabulary:`. Variants are regex-escaped and replaced case-insensitively after polish.
+- **Edit mode** — `edit_mode.enabled`, `edit_mode.modifiers` (default `[ctrl, alt]`), `edit_mode.hold_threshold_ms`.
+- **Voice commands** — `commands.enabled` (say "press enter", "new line", "scratch that").
+- **Snippets** — `snippets.enabled` plus `trigger: expansion` pairs; spoken triggers expand to canned text after polish.
+- **On-screen HUD** — `ui.overlay` (on/off) and `ui.overlay_position` (`bottom` / `top` / `cursor`).
 
 ## Context-aware prompts
 
@@ -61,8 +91,11 @@ Whisper2.0/
   hotkey.py            Ctrl+Win combo controller (hold + double-tap)
   audio.py             mic capture (single-shot PTT + silence-chunked continuous)
   transcribe.py        faster-whisper wrapper, auto CPU/CUDA
-  llm.py               Ollama HTTP client + prompt loader
+  llm.py               Ollama HTTP client + prompt loader (polish + edit)
   context.py           active-window -> prompt rule table
+  commands.py          voice-command parser (press enter / new line / scratch that)
+  snippets.py          spoken-trigger -> canned-text expansion
+  overlay.py           on-screen status HUD (non-activating, click-through)
   prompts/             cleanup_*.md prompt files
   requirements.txt     pinned-loose Python deps
   run.bat / run-terminal.bat / setup.bat

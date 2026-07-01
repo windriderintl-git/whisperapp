@@ -70,7 +70,8 @@ class OllamaPolisher:
         self.keep_alive = keep_alive
         self._warned_unreachable = False
 
-    def polish(self, text: str, prompt_name: str = "cleanup_default") -> str:
+    def polish(self, text: str, prompt_name: str = "cleanup_default",
+               stream_cb=None) -> str:
         if not self.enabled or not text.strip():
             return text
         try:
@@ -79,11 +80,33 @@ class OllamaPolisher:
             # Cleaned output is never much longer than the input; cap generation
             # accordingly instead of always allowing 768 tokens.
             num_predict = max(64, min(768, int(len(text.split()) * 2.5)))
-            result = self._call(full, num_predict)
+            result = self._call(full, num_predict, stream_cb)
             return result if result else text
         except Exception as e:
             log.warning(f"[llm] polish failed: {e} — using raw text")
             return text
+
+    def edit(self, instruction: str, selection: str, prompt_name: str = "edit") -> str:
+        """Apply a spoken edit INSTRUCTION to the user's SELECTED text (voice
+        Command/Edit mode). Unlike polish() this is intent-driven — the model
+        rewrites `selection` per `instruction` (e.g. "make this more formal",
+        "turn into bullet points") rather than just cleaning disfluencies.
+
+        Returns the original `selection` unchanged on any failure/empty/disabled
+        path so a misfired command never destroys the user's text.
+        """
+        if not self.enabled or not selection.strip() or not instruction.strip():
+            return selection
+        try:
+            template = _load_prompt(prompt_name, self.polish_intensity)
+            full = template.replace("{selection}", selection).replace("{instruction}", instruction)
+            # Edited output tracks the selection length; cap generation like polish().
+            num_predict = max(64, min(768, int(len(selection.split()) * 2.5)))
+            result = self._call(full, num_predict)
+            return result if result else selection
+        except Exception as e:
+            log.warning(f"[llm] edit failed: {e} — using original selection")
+            return selection
 
     def warmup(self):
         """Send a tiny generation to load the model into RAM/VRAM.
@@ -112,11 +135,12 @@ class OllamaPolisher:
         except Exception as e:
             log.warning(f"[llm] warmup failed: {e}")
 
-    def _call(self, prompt: str, num_predict: int = 768) -> str | None:
+    def _call(self, prompt: str, num_predict: int = 768, stream_cb=None) -> str | None:
+        streaming = stream_cb is not None
         body = json.dumps({
             "model": self.model,
             "prompt": prompt,
-            "stream": False,
+            "stream": streaming,
             "keep_alive": self.keep_alive,
             "options": {"temperature": 0.0, "num_predict": num_predict},
         }).encode("utf-8")
@@ -128,10 +152,29 @@ class OllamaPolisher:
         t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                if streaming:
+                    # Ollama emits one JSON object per line; accumulate the
+                    # "response" chunks and hand the caller the cumulative
+                    # string so it can diff/paste incrementally.
+                    acc = ""
+                    for line in resp:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        obj = json.loads(line.decode("utf-8"))
+                        chunk = obj.get("response", "")
+                        if chunk:
+                            acc += chunk
+                            stream_cb(acc)
+                        if obj.get("done"):
+                            break
+                    response = acc
+                else:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    response = data.get("response", "")
             elapsed = (time.time() - t0) * 1000
             log.info(f"[llm] polish ok ({elapsed:.0f}ms)")
-            return _strip_wrapping(data.get("response", "").strip())
+            return _strip_wrapping(response.strip())
         except (urllib.error.URLError, TimeoutError) as e:
             if not self._warned_unreachable:
                 log.warning(f"[llm] Ollama unreachable at {self.host} ({e}). "

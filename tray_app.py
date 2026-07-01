@@ -42,6 +42,7 @@ ICONS = {
     "recording":       _make_icon((220, 50, 50)),                # red
     "transcribing":    _make_icon((230, 160, 30)),               # amber
     "polishing":       _make_icon((230, 160, 30)),               # amber
+    "editing":         _make_icon((70, 140, 230)),               # blue
     "paused":          _make_icon((140, 140, 140), filled=False),# gray ring
     "degraded:ollama": _make_icon((230, 200, 30)),               # yellow
     "no_mic":          _make_icon((220, 50, 50), filled=False),  # red ring
@@ -52,6 +53,7 @@ TOOLTIPS = {
     "recording":       "Whisper 2 — Recording…",
     "transcribing":    "Whisper 2 — Transcribing…",
     "polishing":       "Whisper 2 — Polishing…",
+    "editing":         "Whisper 2 — Editing selection…",
     "paused":          "Whisper 2 — Paused",
     "degraded:ollama": "Whisper 2 — Ollama not running (raw transcripts)",
     "no_mic":          "Whisper 2 — Microphone unavailable",
@@ -123,6 +125,7 @@ class TrayController:
             "recording":       "Recording",
             "transcribing":    "Transcribing",
             "polishing":       "Polishing",
+            "editing":         "Editing selection",
             "paused":          "Paused",
             "degraded:ollama": "Ollama down (raw)",
             "no_mic":          "Microphone unavailable",

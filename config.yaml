@@ -52,6 +52,23 @@ output:
   restore_delay_ms: 300       # raise this if an app that reads the clipboard
                               # asynchronously (some Electron apps) loses the paste
 
+edit_mode:
+  enabled: true
+  modifiers: [ctrl, alt]      # HOLD to edit the highlighted text by voice ("make this formal", "bulletize", "summarize")
+  hold_threshold_ms: 350
+
+commands:
+  enabled: true               # inline voice commands: "press enter" to submit, "new line", "scratch that" to cancel
+
+snippets:
+  enabled: true
+  # Spoken trigger -> expansion. Example:
+  # my email: robert@windrider.com
+
+ui:
+  overlay: true               # on-screen status HUD (recording/transcribing/polishing/editing)
+  overlay_position: bottom     # bottom | top | cursor
+
 # Forced spelling/casing corrections applied after LLM polish.
 # Add canonical spellings here; variants are matched case-insensitively
 # and regex-escaped. Example below — replace with words you actually use.
