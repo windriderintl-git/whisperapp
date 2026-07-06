@@ -83,6 +83,7 @@ class App:
             silence_duration=a["silence_duration_s"],
             min_chunk_duration_s=a["min_chunk_duration_s"],
             ctx_provider=self._window_ctx,
+            level_callback=self._on_audio_level,
         )
         w = config["whisper"]
         self.transcriber = Transcriber(
@@ -194,6 +195,13 @@ class App:
             self._overlay.set_state(state)
         except Exception as e:
             log.warning(f"overlay set_state raised: {e}")
+
+    def _on_audio_level(self, rms: float) -> None:
+        """Per-frame mic RMS from the recorder thread -> HUD waveform.
+        The recorder is built before the overlay, so look it up lazily."""
+        ov = getattr(self, "_overlay", None)
+        if ov is not None:
+            ov.set_level(rms)
 
     def _snippet_map(self) -> dict[str, str]:
         """Trigger->expansion pairs from the `snippets:` config, minus the

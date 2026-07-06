@@ -23,41 +23,38 @@ log = logging.getLogger("whisper2.tray")
 from main import App
 import first_run
 import settings_ui
+import ui_style
 
 
-def _make_icon(color: tuple[int, int, int], filled: bool = True) -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+def _make_icon(state: str) -> Image.Image:
+    """Tray icon: the brand purple rounded-square mic (matching app.ico),
+    with a state-colored badge in the corner. Idle is the clean brand mark.
+    Drawn at 256px and downscaled for smooth edges."""
+    style = ui_style.get(state)
+    S = 256
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    if filled:
-        d.ellipse((8, 8, 56, 56), fill=color + (255,))
-    else:
-        d.ellipse((8, 8, 56, 56), outline=color + (255,), width=4)
-    # small mic-ish dot in the middle (just visual interest)
-    d.ellipse((28, 28, 36, 36), fill=(255, 255, 255, 255) if filled else color + (255,))
-    return img
+    d.rounded_rectangle((10, 10, 246, 246), radius=56,
+                        fill=ui_style.BRAND_RGB + (255,))
+    # White mic glyph: capsule + yoke arc + stem + base.
+    white = (255, 255, 255, 255)
+    d.rounded_rectangle((100, 50, 156, 142), radius=28, fill=white)
+    d.arc((74, 74, 182, 170), start=0, end=180, fill=white, width=14)
+    d.line((128, 170, 128, 196), fill=white, width=14)
+    d.line((94, 202, 162, 202), fill=white, width=14)
+    if state != "idle":
+        # Badge backed by a dark ring so it reads against any tray theme.
+        d.ellipse((146, 146, 250, 250), fill=(28, 28, 30, 255))
+        c = style.rgb + (255,)
+        if style.filled:
+            d.ellipse((162, 162, 234, 234), fill=c)
+        else:
+            d.ellipse((162, 162, 234, 234), outline=c, width=14)
+    return img.resize((64, 64), Image.LANCZOS)
 
 
-ICONS = {
-    "idle":            _make_icon((90, 90, 90)),                 # gray
-    "recording":       _make_icon((220, 50, 50)),                # red
-    "transcribing":    _make_icon((230, 160, 30)),               # amber
-    "polishing":       _make_icon((230, 160, 30)),               # amber
-    "editing":         _make_icon((70, 140, 230)),               # blue
-    "paused":          _make_icon((140, 140, 140), filled=False),# gray ring
-    "degraded:ollama": _make_icon((230, 200, 30)),               # yellow
-    "no_mic":          _make_icon((220, 50, 50), filled=False),  # red ring
-}
-
-TOOLTIPS = {
-    "idle":            "Whisper 2 — Ready. Hold Ctrl+Win to dictate.",
-    "recording":       "Whisper 2 — Recording…",
-    "transcribing":    "Whisper 2 — Transcribing…",
-    "polishing":       "Whisper 2 — Polishing…",
-    "editing":         "Whisper 2 — Editing selection…",
-    "paused":          "Whisper 2 — Paused",
-    "degraded:ollama": "Whisper 2 — Ollama not running (raw transcripts)",
-    "no_mic":          "Whisper 2 — Microphone unavailable",
-}
+ICONS = {state: _make_icon(state) for state in ui_style.STATES}
+TOOLTIPS = {state: s.tooltip for state, s in ui_style.STATES.items()}
 
 
 class TrayController:
@@ -119,17 +116,11 @@ class TrayController:
             log.warning(f"recopy failed: {e}")
 
     def _status_label(self) -> str:
-        # human-readable
-        return {
-            "idle":            "Ready",
-            "recording":       "Recording",
-            "transcribing":    "Transcribing",
-            "polishing":       "Polishing",
-            "editing":         "Editing selection",
-            "paused":          "Paused",
-            "degraded:ollama": "Ollama down (raw)",
-            "no_mic":          "Microphone unavailable",
-        }.get(self.state, self.state)
+        # human-readable, shared with the HUD (minus the trailing ellipsis)
+        style = ui_style.STATES.get(self.state)
+        if style is None:
+            return self.state
+        return style.label.rstrip("…")
 
     def on_status(self, state: str) -> None:
         """Called from any thread by App.status_callback."""

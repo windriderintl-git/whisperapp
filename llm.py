@@ -32,9 +32,16 @@ def _load_prompt(name: str, intensity: str = "standard") -> str:
     if key in _PROMPT_CACHE:
         return _PROMPT_CACHE[key]
 
-    candidates = [
-        paths.USER_PROMPTS_DIR / f"{name}_{intensity}.md",
-        paths.USER_PROMPTS_DIR / f"{name}.md",
+    # User overrides only apply to frozen installs. In dev the repo's prompts/
+    # are the source of truth — otherwise a stale %APPDATA% seed silently
+    # shadows every prompt edit you're trying to test.
+    candidates = []
+    if paths.is_frozen():
+        candidates += [
+            paths.USER_PROMPTS_DIR / f"{name}_{intensity}.md",
+            paths.USER_PROMPTS_DIR / f"{name}.md",
+        ]
+    candidates += [
         paths.BUNDLED_PROMPTS_DIR / f"{name}_{intensity}.md",
         paths.BUNDLED_PROMPTS_DIR / f"{name}.md",
         paths.BUNDLED_PROMPTS_DIR / _ULTIMATE_FALLBACK,
