@@ -119,7 +119,12 @@ class App:
         self.snippets_enabled = bool(self.snippets_cfg.get("enabled", True))
         self.edit_cfg = config.get("edit_mode", {}) or {}
         ui_cfg = config.get("ui", {}) or {}
-        self._overlay = Overlay(ui_cfg)
+        self._overlay = Overlay(
+            ui_cfg,
+            on_click=self._on_hud_click,
+            history_provider=lambda: list(self.history),
+            on_history_select=self._on_hud_history_pick,
+        )
         self._overlay.start()
 
         self._warmup_on_start = l.get("warmup_on_start", False)
@@ -195,6 +200,23 @@ class App:
             self._overlay.set_state(state)
         except Exception as e:
             log.warning(f"overlay set_state raised: {e}")
+
+    def _on_hud_click(self) -> None:
+        """HUD pill clicked: toggle hands-free dictation, exactly like the
+        hotkey double-tap. Ignored mid-PTT/edit (the physical combo owns those)
+        and before __init__ finishes wiring state (getattr defaults)."""
+        if getattr(self, "in_ptt", False) or getattr(self, "_edit_active", False):
+            return
+        self.on_double_tap()
+
+    def _on_hud_history_pick(self, text: str) -> None:
+        """A recent dictation picked from the HUD menu: put it on the
+        clipboard so the user can paste it wherever they like."""
+        try:
+            pyperclip.copy(text)
+            log.info("[hud] history entry copied to clipboard")
+        except Exception as e:
+            log.warning(f"[hud] history copy failed: {e}")
 
     def _on_audio_level(self, rms: float) -> None:
         """Per-frame mic RMS from the recorder thread -> HUD waveform.

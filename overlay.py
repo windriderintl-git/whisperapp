@@ -24,9 +24,17 @@ Design constraints (see CRITICAL REQUIREMENTS in the task):
 
 stdlib only: tkinter, ctypes, queue, threading, sys, math, time, logging.
 
+In interactive mode (``ui.overlay_interactive``, on by default) the pill is a
+Wispr Flow-style resting bar: always on screen (compact + dimmed while idle),
+left-click toggles hands-free dictation, right-click lists recent dictations.
+The window still never activates, so clicks never steal keyboard focus.
+
 Contract used by the integrator (tray_app / main)::
 
-    ov = Overlay(config.get("ui"))     # the `ui:` sub-dict of config.yaml
+    ov = Overlay(config.get("ui"),      # the `ui:` sub-dict of config.yaml
+                 on_click=toggle,        # left-click -> toggle dictation
+                 history_provider=hist,  # -> list[str] recent transcripts
+                 on_history_select=pick) # user picked one (copy it)
     ov.start()                          # non-blocking, idempotent
     ov.set_state("recording")           # thread-safe, from any thread
     ov.set_level(rms)                   # thread-safe, from the audio thread
@@ -75,6 +83,9 @@ _FG = "#f2f2f7"       # label text
 _MUTED = "#98989d"    # timer text
 _BAR = "#ececf0"      # waveform bars
 _ALPHA = 0.94
+_ALPHA_IDLE = 0.6     # dimmed resting pill (interactive mode, idle)
+_WIDTH_IDLE = 116     # compact resting pill (interactive mode, idle)
+_HISTORY_MAX = 8      # entries shown in the right-click history menu
 _DOT_R = 5            # base dot radius
 _DOT_PULSE = 2.5      # +/- radius during the pulse
 _POLL_MS = 40         # how often the Tk thread drains the state queue
@@ -106,12 +117,22 @@ class Overlay:
     caller or block the dictation pipeline.
     """
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict | None = None,
+                 on_click=None, history_provider=None, on_history_select=None):
         cfg = config or {}
         # Respect `ui.overlay: false` to disable entirely.
         self._enabled = bool(cfg.get("overlay", True)) and _TK_IMPORT_OK
         pos = str(cfg.get("overlay_position", "bottom")).lower()
         self._position = pos if pos in ("bottom", "top", "cursor") else "bottom"
+        # Interactive mode (Wispr Flow-style resting bar): the pill stays on
+        # screen while idle (compact + dimmed), left-click toggles hands-free
+        # dictation, right-click lists recent dictations. The window is NOT
+        # click-through in this mode but stays non-activating, so clicking it
+        # never moves keyboard focus away from the user's target window.
+        self._interactive = bool(cfg.get("overlay_interactive", True))
+        self._on_click = on_click
+        self._history_provider = history_provider
+        self._on_history_select = on_history_select
         # Optional cosmetic overrides (fall back to sensible defaults).
         try:
             self._width = int(cfg.get("overlay_width", _WIDTH))
@@ -131,6 +152,8 @@ class Overlay:
         # Tk-thread-only state (never touched from other threads).
         self._root = None
         self._canvas = None
+        self._cur_w = self._width
+        self._pill_id = None
         self._dot_id = None
         self._text_id = None
         self._timer_id = None
@@ -260,8 +283,9 @@ class Overlay:
         )
         canvas.pack()
         self._canvas = canvas
+        self._cur_w = w
 
-        self._draw_pill(canvas, w, h)
+        self._pill_id = self._draw_pill(canvas, w, h)
 
         cy = h // 2
         # Colored status dot on the left.
@@ -296,14 +320,26 @@ class Overlay:
             )
             self._bar_ids.append(bar)
 
+        if self._interactive:
+            canvas.configure(cursor="hand2")
+            canvas.bind("<Button-1>", self._on_pill_click)
+            canvas.bind("<Button-3>", self._show_history_menu)
+            canvas.bind("<Enter>", lambda _e: self._set_alpha(_ALPHA))
+            canvas.bind("<Leave>", lambda _e: self._sync_alpha())
+
         root.update_idletasks()
         self._apply_windows_styles()
 
-        # Start hidden; we're in "idle" until told otherwise.
-        self._hide()
+        # We start in "idle": interactive mode rests as a compact visible
+        # pill, classic mode starts hidden until dictation begins.
+        if self._interactive:
+            self._apply_state("idle")
+        else:
+            self._hide()
 
-    def _draw_pill(self, canvas, w, h) -> None:
-        """Draw a rounded-rectangle 'pill' as the dark translucent background."""
+    def _draw_pill(self, canvas, w, h) -> int:
+        """Draw a rounded-rectangle 'pill' as the dark translucent background.
+        Returns the canvas item id so the pill can be redrawn on resize."""
         r = h // 2
         pad = 1
         x0, y0, x1, y1 = pad, pad, w - pad, h - pad
@@ -322,7 +358,7 @@ class Overlay:
             x0, y0 + r,
             x0, y0,
         ]
-        canvas.create_polygon(
+        return canvas.create_polygon(
             pts, smooth=True, splinesteps=36, fill=_BG,
             outline=_OUTLINE, width=1,
         )
@@ -345,8 +381,11 @@ class Overlay:
             get_long = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
             set_long = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
             ex = get_long(hwnd, _GWL_EXSTYLE)
-            ex |= (_WS_EX_NOACTIVATE | _WS_EX_TOOLWINDOW
-                   | _WS_EX_TRANSPARENT | _WS_EX_LAYERED)
+            ex |= (_WS_EX_NOACTIVATE | _WS_EX_TOOLWINDOW | _WS_EX_LAYERED)
+            if not self._interactive:
+                # Classic mode only: click-through. Interactive mode must
+                # receive clicks (but still never activates, per NOACTIVATE).
+                ex |= _WS_EX_TRANSPARENT
             set_long(hwnd, _GWL_EXSTYLE, ex)
             # SWP_NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
             user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
@@ -418,10 +457,12 @@ class Overlay:
             for bar in self._bar_ids:
                 canvas.itemconfigure(bar, state="hidden")
 
-        if state in _HIDDEN_STATES:
+        if state in _HIDDEN_STATES and not self._interactive:
             self._hide()
         else:
+            self._set_width(self._target_width(state))
             self._show()
+            self._sync_alpha()
 
         # Animate while recording (waveform) or busy (dot pulse).
         if state in (_WAVE_STATES | _PULSE_STATES) and self._visible:
@@ -512,6 +553,94 @@ class Overlay:
     def _reset_dot_size(self) -> None:
         self._set_dot_radius(_DOT_R)
 
+    # ------------------------------------------- interactive mode (Tk thread)
+
+    def _target_width(self, state: str) -> int:
+        """Idle rests as a compact pill in interactive mode; every active
+        state uses the full width (waveform / status label needs the room)."""
+        if self._interactive and state in _HIDDEN_STATES:
+            return min(_WIDTH_IDLE, self._width)
+        return self._width
+
+    def _set_width(self, w: int) -> None:
+        """Resize the pill in place: redraw the background polygon at the new
+        width, keep it under the dot/text, and re-anchor the timer."""
+        if w == self._cur_w:
+            return
+        self._cur_w = w
+        canvas = self._canvas
+        canvas.configure(width=w)
+        canvas.delete(self._pill_id)
+        self._pill_id = self._draw_pill(canvas, w, self._height)
+        canvas.tag_lower(self._pill_id)
+        canvas.coords(self._timer_id, w - 16, self._height // 2)
+        if self._visible:
+            self._place_window()
+
+    def _set_alpha(self, alpha: float) -> None:
+        try:
+            self._root.attributes("-alpha", alpha)
+        except Exception:
+            pass
+
+    def _sync_alpha(self) -> None:
+        """Resting (interactive idle) pill is dimmed; everything else is at
+        full strength. Hover temporarily undims via the <Enter> binding."""
+        idle = self._interactive and self._current_state in _HIDDEN_STATES
+        self._set_alpha(_ALPHA_IDLE if idle else _ALPHA)
+
+    def _on_pill_click(self, _event=None) -> None:
+        """Left-click: toggle hands-free dictation. The callback runs off the
+        Tk thread — it starts/stops the recorder and may join threads, which
+        must never stall the HUD's event loop."""
+        cb = self._on_click
+        if cb is not None:
+            threading.Thread(target=self._safe_call, args=(cb,),
+                             daemon=True).start()
+
+    def _show_history_menu(self, event) -> None:
+        """Right-click: recent dictations, newest first; picking one hands it
+        to on_history_select (the app copies it to the clipboard)."""
+        items = []
+        if self._history_provider is not None:
+            try:
+                items = [str(t) for t in self._history_provider()
+                         if str(t).strip()]
+            except Exception as e:
+                log.debug("overlay history provider failed: %s", e)
+        menu = tk.Menu(self._root, tearoff=0, font=("Segoe UI", 9))
+        if not items:
+            menu.add_command(label="No dictations yet", state="disabled")
+        else:
+            menu.add_command(label="Recent dictations — click to copy",
+                             state="disabled")
+            menu.add_separator()
+            for text in reversed(items[-_HISTORY_MAX:]):
+                label = text if len(text) <= 60 else text[:57] + "..."
+                menu.add_command(
+                    label=label,
+                    command=lambda t=text: self._pick_history(t))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    def _pick_history(self, text: str) -> None:
+        cb = self._on_history_select
+        if cb is not None:
+            threading.Thread(target=self._safe_call, args=(cb, text),
+                             daemon=True).start()
+
+    @staticmethod
+    def _safe_call(fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception as e:
+            log.warning("overlay callback failed: %s", e)
+
     # ------------------------------------------------------ show/hide/place
 
     def _show(self) -> None:
@@ -535,7 +664,7 @@ class Overlay:
 
     def _place_window(self) -> None:
         root = self._root
-        w, h = self._width, self._height
+        w, h = self._cur_w, self._height
         try:
             sw = root.winfo_screenwidth()
             sh = root.winfo_screenheight()

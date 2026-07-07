@@ -49,4 +49,5 @@ snippets:
 ui:
   overlay: true
   overlay_position: bottom
+  overlay_interactive: true
 vocabulary: {}

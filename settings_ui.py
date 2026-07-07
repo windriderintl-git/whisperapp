@@ -110,7 +110,8 @@ _DEFAULT_CONFIG: dict = {
     },
     "commands": {"enabled": True},
     "snippets": {"enabled": True},
-    "ui": {"overlay": True, "overlay_position": "bottom"},
+    "ui": {"overlay": True, "overlay_position": "bottom",
+           "overlay_interactive": True},
     "vocabulary": {},
 }
 
@@ -374,6 +375,8 @@ class _SettingsDialog:
         # On-screen HUD (ui:) ------------------------------------------------
         ui_cfg = self._cfg.get("ui", {}) or {}
         self.var_overlay = tk.BooleanVar(value=bool(ui_cfg.get("overlay", True)))
+        self.var_overlay_interactive = tk.BooleanVar(
+            value=bool(ui_cfg.get("overlay_interactive", True)))
         overlay_pos = str(ui_cfg.get("overlay_position", "bottom")).lower()
         if overlay_pos not in _OVERLAY_POSITIONS:
             overlay_pos = "bottom"
@@ -592,10 +595,15 @@ class _SettingsDialog:
                         variable=self.var_overlay
                         ).grid(row=0, column=0, columnspan=2, sticky="w",
                                pady=2)
-        self._lbl(hud, "Position").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(
+            hud,
+            text="Always show — click to start/stop, right-click for history",
+            variable=self.var_overlay_interactive
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        self._lbl(hud, "Position").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Combobox(hud, textvariable=self.var_overlay_position,
                      state="readonly", values=_OVERLAY_POSITIONS, width=12
-                     ).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=4)
+                     ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=4)
 
         st = self._section(page, "Startup")
         ttk.Checkbutton(st, text="Run Whisper 2 at Windows startup",
@@ -1041,6 +1049,7 @@ class _SettingsDialog:
         # On-screen HUD.
         ui = cfg.setdefault("ui", {})
         ui["overlay"] = bool(self.var_overlay.get())
+        ui["overlay_interactive"] = bool(self.var_overlay_interactive.get())
         ui["overlay_position"] = self.var_overlay_position.get()
 
         # Voice commands.
