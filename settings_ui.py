@@ -103,8 +103,86 @@ _DEFAULT_CONFIG: dict = {
     },
     "context": {"enabled": True, "override": None},
     "output": {"mode": "type", "trailing_space": True},
+    "edit_mode": {
+        "enabled": True,
+        "modifiers": ["ctrl", "alt"],
+        "hold_threshold_ms": 350,
+    },
+    "commands": {"enabled": True},
+    "snippets": {"enabled": True},
+    "ui": {"overlay": True, "overlay_position": "bottom",
+           "overlay_interactive": True},
     "vocabulary": {},
 }
+
+_OVERLAY_POSITIONS = ["bottom", "top", "cursor"]
+
+# Wispr Flow-style palette: warm off-white chrome, white content panel,
+# near-black text and primary actions, hairline borders.
+_BG = "#f4f2ef"            # app / sidebar background
+_BG_CONTENT = "#fdfdfc"    # content panel
+_BORDER = "#e6e3de"        # hairline borders / dividers
+_TEXT = "#1c1c1e"
+_TEXT_MUTED = "#6f6b66"
+_NAV_ACTIVE = "#e9e6e0"    # active sidebar item
+_NAV_HOVER = "#eeece7"
+
+_FONT_BASE = ("Segoe UI", 10)
+_FONT_NAV = ("Segoe UI", 11)
+_FONT_BRAND = ("Segoe UI", 12, "bold")
+_FONT_PAGE_TITLE = ("Segoe UI", 16, "bold")
+_FONT_SECTION = ("Segoe UI", 11, "bold")
+
+# Button palette (matches the HUD's dark-pill look).
+_BTN_PRIMARY_BG = "#1c1c1e"
+_BTN_PRIMARY_BG_ACTIVE = "#3a3a3c"
+_BTN_PRIMARY_FG = "#ffffff"
+_BTN_SECONDARY_BG = "#e8e5df"
+_BTN_SECONDARY_BG_ACTIVE = "#dcd8d1"
+_BTN_SECONDARY_FG = "#1c1c1e"
+_BTN_FONT = ("Segoe UI", 10)
+
+
+def _pill_button(parent: tk.Misc, text: str, command,
+                 primary: bool = False, small: bool = False) -> tk.Button:
+    """Flat, generously padded button (Wispr Flow-style pill).
+
+    tk.Button rather than ttk.Button because the vista theme draws native
+    buttons and ignores background/padding styling.
+    """
+    padx, pady = (12, 4) if small else (18, 7)
+    if primary:
+        colors = dict(bg=_BTN_PRIMARY_BG, fg=_BTN_PRIMARY_FG,
+                      activebackground=_BTN_PRIMARY_BG_ACTIVE,
+                      activeforeground=_BTN_PRIMARY_FG)
+    else:
+        colors = dict(bg=_BTN_SECONDARY_BG, fg=_BTN_SECONDARY_FG,
+                      activebackground=_BTN_SECONDARY_BG_ACTIVE,
+                      activeforeground=_BTN_SECONDARY_FG)
+    return tk.Button(parent, text=text, command=command, relief="flat",
+                     bd=0, cursor="hand2", padx=padx, pady=pady,
+                     font=_BTN_FONT, **colors)
+
+
+def _bring_to_front(win: tk.Misc) -> None:
+    """Force a window to the foreground and give it keyboard focus.
+
+    Settings (and its modal sub-editors) are created on the pystray tray
+    callback thread, which does NOT hold Windows foreground-activation
+    rights. Without this, a freshly created Toplevel — e.g. the "Add
+    snippet" / "Add vocabulary" editor — can open *behind* the active app
+    while it grabs input, so the parent window looks frozen and the button
+    appears to do nothing. A momentary topmost flip plus focus_force pulls
+    the window to the front without leaving it permanently above other apps.
+    """
+    try:
+        win.lift()
+        win.attributes("-topmost", True)
+        win.update_idletasks()
+        win.focus_force()
+        win.attributes("-topmost", False)
+    except tk.TclError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +202,10 @@ def _read_current_config_dict() -> dict:
         log.exception("resolve_config_path failed; using built-in defaults")
         return json.loads(json.dumps(_DEFAULT_CONFIG))
 
+    # NB: Path.open, not the builtin — the module-level `open()` entry point
+    # shadows the builtin within this module.
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         if not isinstance(data, dict):
             log.warning("config.yaml did not parse to a dict; using defaults")
@@ -142,7 +222,7 @@ def _read_current_config_dict() -> dict:
 def _write_config(cfg: dict) -> None:
     path = paths.resolve_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
 
 
@@ -252,7 +332,7 @@ class _SettingsDialog:
             self.dialog = tk.Toplevel(parent)
 
         self.dialog.title("Whisper 2 - Settings")
-        self.dialog.resizable(False, False)
+        self.dialog.resizable(True, True)
         # Prevent close-via-X from being treated as "save".
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
@@ -274,8 +354,8 @@ class _SettingsDialog:
             str(mods[0]).lower() if len(mods) > 0 else "ctrl", "Ctrl")
         mod2 = _MODIFIER_FROM_CONFIG.get(
             str(mods[1]).lower() if len(mods) > 1 else "win", "Win")
-        self.var_mod1 = tk.StringVar(value=mod1)
-        self.var_mod2 = tk.StringVar(value=mod2)
+        self.var_mod1 = tk.StringVar(master=self.dialog, value=mod1)
+        self.var_mod2 = tk.StringVar(master=self.dialog, value=mod2)
 
         whisper_model = self._cfg.get("whisper", {}).get("model", "small.en")
         if whisper_model not in _WHISPER_MODELS:
@@ -283,15 +363,15 @@ class _SettingsDialog:
             self._whisper_choices = _WHISPER_MODELS + [whisper_model]
         else:
             self._whisper_choices = list(_WHISPER_MODELS)
-        self.var_whisper_model = tk.StringVar(value=whisper_model)
+        self.var_whisper_model = tk.StringVar(master=self.dialog, value=whisper_model)
 
         output_mode = self._cfg.get("output", {}).get("mode", "type")
         if output_mode not in {v for _, v in _OUTPUT_LABELS}:
             output_mode = "type"
-        self.var_output_mode = tk.StringVar(value=output_mode)
+        self.var_output_mode = tk.StringVar(master=self.dialog, value=output_mode)
 
         self.var_llm_enabled = tk.BooleanVar(
-            value=bool(self._cfg.get("llm", {}).get("enabled", True)))
+            master=self.dialog, value=bool(self._cfg.get("llm", {}).get("enabled", True)))
 
         polish_raw = str(self._cfg.get("llm", {}).get("polish_intensity",
                                                      "standard")).lower()
@@ -300,21 +380,43 @@ class _SettingsDialog:
             "standard": "Standard",
             "aggressive": "Aggressive",
         }.get(polish_raw, "Standard")
-        self.var_polish_intensity = tk.StringVar(value=polish_label)
+        self.var_polish_intensity = tk.StringVar(master=self.dialog, value=polish_label)
         self.var_polish_tooltip = tk.StringVar(
-            value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
+            master=self.dialog, value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
 
         ollama_host = self._cfg.get("llm", {}).get("host", "http://localhost:11434")
         self._ollama_models = _fetch_ollama_models(ollama_host)
         current_model = str(self._cfg.get("llm", {}).get("model", "qwen2.5:3b"))
         if current_model and current_model not in self._ollama_models:
             self._ollama_models = [current_model] + self._ollama_models
-        self.var_ollama_model = tk.StringVar(value=current_model)
+        self.var_ollama_model = tk.StringVar(master=self.dialog, value=current_model)
 
-        self.var_autostart = tk.BooleanVar(value=_autostart_currently_enabled())
+        self.var_autostart = tk.BooleanVar(master=self.dialog,
+                                           value=_autostart_currently_enabled())
+
+        # On-screen HUD (ui:) ------------------------------------------------
+        ui_cfg = self._cfg.get("ui", {}) or {}
+        self.var_overlay = tk.BooleanVar(master=self.dialog,
+                                         value=bool(ui_cfg.get("overlay", True)))
+        self.var_overlay_interactive = tk.BooleanVar(
+            master=self.dialog, value=bool(ui_cfg.get("overlay_interactive", True)))
+        overlay_pos = str(ui_cfg.get("overlay_position", "bottom")).lower()
+        if overlay_pos not in _OVERLAY_POSITIONS:
+            overlay_pos = "bottom"
+        self.var_overlay_position = tk.StringVar(master=self.dialog, value=overlay_pos)
+
+        # Voice commands (commands:) ----------------------------------------
+        cmd_cfg = self._cfg.get("commands", {}) or {}
+        self.var_commands_enabled = tk.BooleanVar(
+            master=self.dialog, value=bool(cmd_cfg.get("enabled", True)))
+
+        # Edit mode (edit_mode:) --------------------------------------------
+        edit_cfg = self._cfg.get("edit_mode", {}) or {}
+        self.var_edit_enabled = tk.BooleanVar(
+            master=self.dialog, value=bool(edit_cfg.get("enabled", True)))
 
         self._build_ui()
-        self._size_and_center(460, 820)
+        self._size_and_center()
 
         # Modal grab
         if parent is not None:
@@ -324,6 +426,7 @@ class _SettingsDialog:
                 pass
         self.dialog.grab_set()
         self.dialog.focus_set()
+        _bring_to_front(self.dialog)
 
     # -- snapshotting -----------------------------------------------------
 
@@ -340,107 +443,253 @@ class _SettingsDialog:
     # -- layout ----------------------------------------------------------
 
     def _build_ui(self) -> None:
-        pad = {"padx": 10, "pady": 6}
-        outer = ttk.Frame(self.dialog, padding=14)
-        outer.pack(fill="both", expand=True)
+        d = self.dialog
+        d.configure(bg=_BG)
 
-        # Hotkey -----------------------------------------------------------
-        hk = ttk.LabelFrame(outer, text="Hotkey")
-        hk.pack(fill="x", **pad)
+        # Restyle the themed widgets that sit on the white content panel.
+        style = ttk.Style(d)
+        style.configure("TFrame", background=_BG_CONTENT)
+        style.configure("TLabel", background=_BG_CONTENT, foreground=_TEXT,
+                        font=_FONT_BASE)
+        style.configure("TCheckbutton", background=_BG_CONTENT,
+                        foreground=_TEXT, font=_FONT_BASE)
+        style.configure("TRadiobutton", background=_BG_CONTENT,
+                        foreground=_TEXT, font=_FONT_BASE)
+        style.configure("Treeview", background="#ffffff",
+                        fieldbackground="#ffffff", foreground=_TEXT,
+                        rowheight=30, font=_FONT_BASE, borderwidth=0)
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
+                        foreground=_TEXT_MUTED, relief="flat")
 
-        ttk.Label(hk, text="Modifier 1:").grid(row=0, column=0, sticky="w",
-                                               padx=8, pady=6)
-        cb1 = ttk.Combobox(hk, textvariable=self.var_mod1, state="readonly",
-                           values=_MODIFIER_CHOICES, width=10)
-        cb1.grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        # Sidebar ------------------------------------------------------------
+        sidebar = tk.Frame(d, bg=_BG, width=180)
+        sidebar.pack(side="left", fill="y", padx=(14, 0), pady=16)
+        sidebar.pack_propagate(False)
 
-        ttk.Label(hk, text="Modifier 2:").grid(row=0, column=2, sticky="w",
-                                               padx=8, pady=6)
-        cb2 = ttk.Combobox(hk, textvariable=self.var_mod2, state="readonly",
-                           values=_MODIFIER_CHOICES, width=10)
-        cb2.grid(row=0, column=3, sticky="w", padx=8, pady=6)
+        tk.Label(sidebar, text="Whisper 2", bg=_BG, fg=_TEXT,
+                 font=_FONT_BRAND, anchor="w", padx=14
+                 ).pack(fill="x", pady=(4, 18))
 
-        ttk.Label(hk, text="Hold both to dictate. Double-tap toggles "
-                          "continuous mode.",
-                  foreground="#666").grid(row=1, column=0, columnspan=4,
-                                          sticky="w", padx=8, pady=(0, 6))
+        self._nav_labels: dict[str, tk.Label] = {}
+        self._pages: dict[str, tk.Frame] = {}
+        self._active_page: Optional[str] = None
+        for key, label in (("general", "General"),
+                           ("dictation", "Dictation"),
+                           ("vocabulary", "Vocabulary"),
+                           ("snippets", "Snippets")):
+            self._add_nav_item(sidebar, key, label)
 
-        # Whisper ----------------------------------------------------------
-        wf = ttk.LabelFrame(outer, text="Transcription")
-        wf.pack(fill="x", **pad)
-        ttk.Label(wf, text="Whisper model:").grid(row=0, column=0, sticky="w",
-                                                  padx=8, pady=6)
-        ttk.Combobox(wf, textvariable=self.var_whisper_model, state="readonly",
-                     values=self._whisper_choices, width=16
-                     ).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        # Right column ---------------------------------------------------------
+        right = tk.Frame(d, bg=_BG)
+        right.pack(side="left", fill="both", expand=True, padx=16, pady=16)
 
-        # Output -----------------------------------------------------------
-        of = ttk.LabelFrame(outer, text="Output")
-        of.pack(fill="x", **pad)
+        # Bottom action bar is packed FIRST and anchored to the bottom edge:
+        # when the window is shorter than the content wants (e.g. display
+        # scaling > 100%), Tk clips the last-packed widget — that must be the
+        # page body, never the Save/Cancel row.
+        btns = tk.Frame(right, bg=_BG)
+        btns.pack(side="bottom", fill="x", pady=(12, 0))
+        tk.Frame(btns, bg=_BG).pack(side="left", expand=True, fill="x")
+        _pill_button(btns, "Cancel", self._on_cancel
+                     ).pack(side="left", padx=4)
+        _pill_button(btns, "Save & Restart", self._on_save_restart
+                     ).pack(side="left", padx=4)
+        _pill_button(btns, "Save", self._on_save, primary=True
+                     ).pack(side="left", padx=(4, 0))
+
+        # White content panel the pages live on.
+        self._page_container = tk.Frame(right, bg=_BG_CONTENT,
+                                        highlightbackground=_BORDER,
+                                        highlightthickness=1)
+        self._page_container.pack(fill="both", expand=True)
+
+        self._build_general_page()
+        self._build_dictation_page()
+        self._build_vocab_page()
+        self._build_snippets_page()
+        self._show_page("general")
+
+    # -- sidebar nav -------------------------------------------------------
+
+    def _add_nav_item(self, sidebar: tk.Frame, key: str, label: str) -> None:
+        lbl = tk.Label(sidebar, text=label, bg=_BG, fg=_TEXT, font=_FONT_NAV,
+                       anchor="w", padx=14, pady=7, cursor="hand2")
+        lbl.pack(fill="x", pady=1)
+        lbl.bind("<Button-1>", lambda _e: self._show_page(key))
+        lbl.bind("<Enter>", lambda _e: self._nav_hover(key, True))
+        lbl.bind("<Leave>", lambda _e: self._nav_hover(key, False))
+        self._nav_labels[key] = lbl
+
+    def _nav_hover(self, key: str, entering: bool) -> None:
+        if key == self._active_page:
+            return
+        self._nav_labels[key].configure(bg=_NAV_HOVER if entering else _BG)
+
+    def _show_page(self, key: str) -> None:
+        if key == self._active_page:
+            return
+        if self._active_page is not None:
+            self._pages[self._active_page].pack_forget()
+            self._nav_labels[self._active_page].configure(bg=_BG)
+        self._pages[key].pack(fill="both", expand=True, padx=26, pady=(20, 22))
+        self._nav_labels[key].configure(bg=_NAV_ACTIVE)
+        self._active_page = key
+
+    # -- page scaffolding ----------------------------------------------------
+
+    def _new_page(self, key: str, title: str, action_text: str = "",
+                  action_cmd=None) -> tk.Frame:
+        """Page with a Flow-style header: bold title left, optional dark
+        primary action pill right."""
+        page = tk.Frame(self._page_container, bg=_BG_CONTENT)
+        self._pages[key] = page
+        header = tk.Frame(page, bg=_BG_CONTENT)
+        header.pack(fill="x", pady=(0, 10))
+        tk.Label(header, text=title, bg=_BG_CONTENT, fg=_TEXT,
+                 font=_FONT_PAGE_TITLE).pack(side="left")
+        if action_text:
+            _pill_button(header, action_text, action_cmd, primary=True,
+                         small=True).pack(side="right")
+        return page
+
+    def _section(self, page: tk.Frame, heading: str, desc: str = "",
+                 first: bool = False) -> tk.Frame:
+        """Flat section: hairline divider, bold heading, optional muted
+        description; returns the body frame for controls."""
+        if not first:
+            tk.Frame(page, bg=_BORDER, height=1).pack(fill="x", pady=(14, 0))
+        tk.Label(page, text=heading, bg=_BG_CONTENT, fg=_TEXT,
+                 font=_FONT_SECTION, anchor="w").pack(fill="x", pady=(12, 2))
+        if desc:
+            tk.Label(page, text=desc, bg=_BG_CONTENT, fg=_TEXT_MUTED,
+                     font=_FONT_BASE, anchor="w", justify="left",
+                     wraplength=440).pack(fill="x", pady=(0, 2))
+        body = tk.Frame(page, bg=_BG_CONTENT)
+        body.pack(fill="x", pady=(4, 0))
+        return body
+
+    @staticmethod
+    def _lbl(parent: tk.Misc, text: str, muted: bool = False) -> tk.Label:
+        return tk.Label(parent, text=text, bg=_BG_CONTENT,
+                        fg=_TEXT_MUTED if muted else _TEXT, font=_FONT_BASE)
+
+    def _tree_card(self, page: tk.Frame, columns: tuple[str, str],
+                   headings: tuple[str, str]) -> ttk.Treeview:
+        """White hairline-bordered list card holding a two-column Treeview."""
+        card = tk.Frame(page, bg="#ffffff", highlightbackground=_BORDER,
+                        highlightthickness=1)
+        card.pack(fill="both", expand=True, pady=(8, 0))
+        tree = ttk.Treeview(card, columns=columns, show="headings",
+                            height=10, selectmode="browse")
+        tree.heading(columns[0], text=headings[0], anchor="w")
+        tree.heading(columns[1], text=headings[1], anchor="w")
+        tree.column(columns[0], width=160, anchor="w", stretch=False)
+        tree.column(columns[1], width=320, anchor="w", stretch=True)
+        vscroll = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vscroll.set)
+        tree.pack(side="left", fill="both", expand=True, padx=1, pady=1)
+        vscroll.pack(side="right", fill="y", padx=(0, 1), pady=1)
+        return tree
+
+    # -- pages ---------------------------------------------------------------
+
+    def _build_general_page(self) -> None:
+        page = self._new_page("general", "General")
+
+        hk = self._section(page, "Hotkey",
+                           "Hold both to dictate. Double-tap toggles "
+                           "continuous mode.", first=True)
+        self._lbl(hk, "Modifier 1").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Combobox(hk, textvariable=self.var_mod1, state="readonly",
+                     values=_MODIFIER_CHOICES, width=10
+                     ).grid(row=0, column=1, sticky="w", padx=(10, 28), pady=4)
+        self._lbl(hk, "Modifier 2").grid(row=0, column=2, sticky="w", pady=4)
+        ttk.Combobox(hk, textvariable=self.var_mod2, state="readonly",
+                     values=_MODIFIER_CHOICES, width=10
+                     ).grid(row=0, column=3, sticky="w", padx=(10, 0), pady=4)
+
+        of = self._section(page, "Output")
         for i, (label, value) in enumerate(_OUTPUT_LABELS):
             ttk.Radiobutton(of, text=label, value=value,
                             variable=self.var_output_mode
-                            ).grid(row=i, column=0, sticky="w", padx=8, pady=2)
+                            ).grid(row=i, column=0, sticky="w", pady=2)
 
-        # LLM polish -------------------------------------------------------
-        lf = ttk.LabelFrame(outer, text="LLM polish (Ollama)")
-        lf.pack(fill="x", **pad)
+        hud = self._section(page, "On-screen HUD")
+        ttk.Checkbutton(hud, text="Show status pill while dictating",
+                        variable=self.var_overlay
+                        ).grid(row=0, column=0, columnspan=2, sticky="w",
+                               pady=2)
+        ttk.Checkbutton(
+            hud,
+            text="Always show — click to start/stop, right-click for history",
+            variable=self.var_overlay_interactive
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        self._lbl(hud, "Position").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Combobox(hud, textvariable=self.var_overlay_position,
+                     state="readonly", values=_OVERLAY_POSITIONS, width=12
+                     ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=4)
+
+        st = self._section(page, "Startup")
+        ttk.Checkbutton(st, text="Run Whisper 2 at Windows startup",
+                        variable=self.var_autostart
+                        ).grid(row=0, column=0, sticky="w", pady=2)
+
+    def _build_dictation_page(self) -> None:
+        page = self._new_page("dictation", "Dictation")
+
+        tr = self._section(page, "Transcription", first=True)
+        self._lbl(tr, "Whisper model").grid(row=0, column=0, sticky="w",
+                                            pady=4)
+        ttk.Combobox(tr, textvariable=self.var_whisper_model,
+                     state="readonly", values=self._whisper_choices, width=16
+                     ).grid(row=0, column=1, sticky="w", padx=(10, 0), pady=4)
+
+        lf = self._section(page, "LLM polish (Ollama)")
         ttk.Checkbutton(lf, text="Polish transcripts with a local LLM",
                         variable=self.var_llm_enabled
                         ).grid(row=0, column=0, columnspan=2, sticky="w",
-                               padx=8, pady=4)
-        ttk.Label(lf, text="Intensity:").grid(row=1, column=0, sticky="w",
-                                              padx=8, pady=4)
+                               pady=2)
+        self._lbl(lf, "Intensity").grid(row=1, column=0, sticky="w", pady=4)
         intensity_cb = ttk.Combobox(lf, textvariable=self.var_polish_intensity,
                                     state="readonly",
                                     values=_POLISH_INTENSITY_LABELS, width=16)
-        intensity_cb.grid(row=1, column=1, sticky="w", padx=8, pady=4)
-        intensity_cb.bind("<<ComboboxSelected>>", self._on_polish_intensity_changed)
-        ttk.Label(lf, textvariable=self.var_polish_tooltip,
-                  foreground="#666", wraplength=400
-                  ).grid(row=2, column=0, columnspan=2, sticky="w",
-                         padx=8, pady=(0, 6))
-        ttk.Label(lf, text="Model:").grid(row=3, column=0, sticky="w",
-                                          padx=8, pady=4)
+        intensity_cb.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=4)
+        intensity_cb.bind("<<ComboboxSelected>>",
+                          self._on_polish_intensity_changed)
+        tk.Label(lf, textvariable=self.var_polish_tooltip, bg=_BG_CONTENT,
+                 fg=_TEXT_MUTED, font=_FONT_BASE, anchor="w", justify="left",
+                 wraplength=440).grid(row=2, column=0, columnspan=2,
+                                      sticky="w", pady=(0, 4))
+        self._lbl(lf, "Model").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Combobox(lf, textvariable=self.var_ollama_model, state="normal",
                      values=self._ollama_models, width=28
-                     ).grid(row=3, column=1, sticky="w", padx=8, pady=4)
+                     ).grid(row=3, column=1, sticky="w", padx=(10, 0), pady=4)
 
-        # Vocabulary ------------------------------------------------------
-        vf = ttk.LabelFrame(outer, text="Vocabulary corrections")
-        vf.pack(fill="both", expand=True, **pad)
-        ttk.Label(vf, text="Forced spelling fixes applied after polish. "
-                          "One canonical term per row; variants are matched "
-                          "case-insensitively.",
-                  foreground="#666", wraplength=410
-                  ).grid(row=0, column=0, columnspan=2, sticky="w",
-                         padx=8, pady=(4, 6))
+        cf = self._section(page, "Voice commands")
+        ttk.Checkbutton(cf, text='Enable spoken commands ("press enter", '
+                                 '"new line", "scratch that")',
+                        variable=self.var_commands_enabled
+                        ).grid(row=0, column=0, sticky="w", pady=2)
 
-        tree_frame = ttk.Frame(vf)
-        tree_frame.grid(row=1, column=0, columnspan=2, sticky="nsew",
-                        padx=8, pady=4)
-        vf.columnconfigure(0, weight=1)
-        vf.rowconfigure(1, weight=1)
+        ef = self._section(page, "Edit mode",
+                           "Hold Ctrl+Alt, highlight some text, then speak an "
+                           "instruction (e.g. \"make this formal\").")
+        ttk.Checkbutton(ef, text="Edit highlighted text by voice",
+                        variable=self.var_edit_enabled
+                        ).grid(row=0, column=0, sticky="w", pady=2)
 
-        self.vocab_tree = ttk.Treeview(
-            tree_frame, columns=("canonical", "variants"),
-            show="headings", height=10, selectmode="browse")
-        self.vocab_tree.heading("canonical", text="Canonical")
-        self.vocab_tree.heading("variants", text="Variants")
-        # Column widths: 35% / 65% of ~410px usable width.
-        self.vocab_tree.column("canonical", width=143, anchor="w",
-                               stretch=False)
-        self.vocab_tree.column("variants", width=267, anchor="w",
-                               stretch=True)
+    def _build_vocab_page(self) -> None:
+        page = self._new_page("vocabulary", "Vocabulary", "Add new",
+                              self._on_vocab_add)
+        tk.Label(page, text="Forced spelling fixes applied after polish. One "
+                            "canonical term per row; variants are matched "
+                            "case-insensitively.",
+                 bg=_BG_CONTENT, fg=_TEXT_MUTED, font=_FONT_BASE, anchor="w",
+                 justify="left", wraplength=460).pack(fill="x")
 
-        vscroll = ttk.Scrollbar(tree_frame, orient="vertical",
-                                command=self.vocab_tree.yview)
-        self.vocab_tree.configure(yscrollcommand=vscroll.set)
-        self.vocab_tree.pack(side="left", fill="both", expand=True)
-        vscroll.pack(side="right", fill="y")
-
-        self.vocab_tree.bind("<Double-1>",
-                             lambda _e: self._on_vocab_edit())
+        self.vocab_tree = self._tree_card(page, ("canonical", "variants"),
+                                          ("Canonical", "Variants"))
+        self.vocab_tree.bind("<Double-1>", lambda _e: self._on_vocab_edit())
 
         # Populate from cfg.
         vocab_cfg = self._cfg.get("vocabulary") or {}
@@ -456,42 +705,69 @@ class _SettingsDialog:
                 self.vocab_tree.insert("", "end",
                                        values=(canon_str, variants_str))
 
-        vbtns = ttk.Frame(vf)
-        vbtns.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=4)
-        ttk.Button(vbtns, text="Add row", command=self._on_vocab_add
-                   ).pack(side="left", padx=(0, 4))
-        ttk.Button(vbtns, text="Edit selected", command=self._on_vocab_edit
-                   ).pack(side="left", padx=4)
-        ttk.Button(vbtns, text="Remove selected", command=self._on_vocab_remove
-                   ).pack(side="left", padx=4)
+        vbtns = tk.Frame(page, bg=_BG_CONTENT)
+        vbtns.pack(fill="x", pady=(10, 0))
+        _pill_button(vbtns, "Edit selected", self._on_vocab_edit, small=True
+                     ).pack(side="left", padx=(0, 6))
+        _pill_button(vbtns, "Remove selected", self._on_vocab_remove,
+                     small=True).pack(side="left", padx=6)
 
-        # Autostart --------------------------------------------------------
-        af = ttk.LabelFrame(outer, text="Startup")
-        af.pack(fill="x", **pad)
-        ttk.Checkbutton(af, text="Run Whisper 2 at Windows startup",
-                        variable=self.var_autostart
-                        ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+    def _build_snippets_page(self) -> None:
+        page = self._new_page("snippets", "Snippets", "Add new",
+                              self._on_snippet_add)
+        tk.Label(page, text="Spoken trigger phrases that expand to canned "
+                            "text (applied after polish). e.g. \"my email\" "
+                            "-> your address.",
+                 bg=_BG_CONTENT, fg=_TEXT_MUTED, font=_FONT_BASE, anchor="w",
+                 justify="left", wraplength=460).pack(fill="x")
 
-        # Buttons ----------------------------------------------------------
-        btns = ttk.Frame(outer)
-        btns.pack(fill="x", pady=(10, 0))
-        # spacer pushes buttons right
-        ttk.Frame(btns).pack(side="left", expand=True, fill="x")
-        ttk.Button(btns, text="Cancel", command=self._on_cancel
-                   ).pack(side="left", padx=4)
-        ttk.Button(btns, text="Save", command=self._on_save
-                   ).pack(side="left", padx=4)
-        ttk.Button(btns, text="Save & Restart", command=self._on_save_restart
-                   ).pack(side="left", padx=4)
+        self.snippet_tree = self._tree_card(page, ("trigger", "expansion"),
+                                            ("Trigger", "Expansion"))
+        self.snippet_tree.bind("<Double-1>", lambda _e: self._on_snippet_edit())
 
-    def _size_and_center(self, w: int, h: int) -> None:
+        # Populate from cfg (skip the `enabled` flag; keep only string pairs).
+        snippets_cfg = self._cfg.get("snippets") or {}
+        if isinstance(snippets_cfg, dict):
+            for trig, expansion in snippets_cfg.items():
+                if trig == "enabled":
+                    continue
+                trig_str = str(trig).strip()
+                if not trig_str:
+                    continue
+                self.snippet_tree.insert("", "end",
+                                         values=(trig_str, str(expansion)))
+
+        sbtns = tk.Frame(page, bg=_BG_CONTENT)
+        sbtns.pack(fill="x", pady=(10, 0))
+        _pill_button(sbtns, "Edit selected", self._on_snippet_edit, small=True
+                     ).pack(side="left", padx=(0, 6))
+        _pill_button(sbtns, "Remove selected", self._on_snippet_remove,
+                     small=True).pack(side="left", padx=6)
+
+    def _size_and_center(self, min_w: int = 760, min_h: int = 560) -> None:
+        """Size the window from what the built content actually requests, so
+        larger fonts at high display scaling can't clip anything.
+
+        Only the active page is mapped, but unmapped pages still report their
+        requested size — pad the dialog's request by the difference to the
+        largest page so switching pages never clips.
+        """
         self.dialog.update_idletasks()
+        active = self._pages[self._active_page]
+        extra_w = max(p.winfo_reqwidth() for p in self._pages.values()) \
+            - active.winfo_reqwidth()
+        extra_h = max(p.winfo_reqheight() for p in self._pages.values()) \
+            - active.winfo_reqheight()
+        req_w = self.dialog.winfo_reqwidth() + max(0, extra_w)
+        req_h = self.dialog.winfo_reqheight() + max(0, extra_h)
         sw = self.dialog.winfo_screenwidth()
         sh = self.dialog.winfo_screenheight()
+        w = min(max(min_w, req_w), sw - 80)
+        h = min(max(min_h, req_h), sh - 120)
         x = max(0, (sw - w) // 2)
         y = max(0, (sh - h) // 2)
         self.dialog.geometry(f"{w}x{h}+{x}+{y}")
-        self.dialog.minsize(w, h)
+        self.dialog.minsize(680, 520)
 
     # -- collectors ------------------------------------------------------
 
@@ -521,6 +797,27 @@ class _SettingsDialog:
             variants = [v for v in variants if v]
             result[canon] = variants
         return result
+
+    def _collect_snippets(self) -> dict:
+        """Rebuild the snippets map (trigger->expansion) from the Treeview,
+        re-attaching the `enabled` flag from the checkbox."""
+        result: dict[str, object] = {"enabled": self._snippets_enabled_persisted()}
+        for iid in self.snippet_tree.get_children(""):
+            vals = self.snippet_tree.item(iid, "values")
+            if not vals:
+                continue
+            trigger = str(vals[0]).strip()
+            if not trigger or trigger == "enabled":
+                continue
+            expansion = str(vals[1]) if len(vals) > 1 else ""
+            result[trigger] = expansion
+        return result
+
+    def _snippets_enabled_persisted(self) -> bool:
+        """Snippets have no dedicated enable checkbox in the UI; preserve the
+        value already on disk (default True) so round-trips don't flip it."""
+        snips = self._cfg.get("snippets", {}) or {}
+        return bool(snips.get("enabled", True))
 
     # -- polish intensity -------------------------------------------------
 
@@ -570,6 +867,7 @@ class _SettingsDialog:
         on OK, None on Cancel."""
         top = tk.Toplevel(self.dialog)
         top.title(title)
+        top.configure(bg=_BG_CONTENT)
         top.resizable(False, False)
         top.transient(self.dialog)
         try:
@@ -582,13 +880,13 @@ class _SettingsDialog:
 
         ttk.Label(frm, text="Canonical spelling:").grid(
             row=0, column=0, sticky="w", padx=4, pady=4)
-        var_canon = tk.StringVar(value=canon)
+        var_canon = tk.StringVar(master=top, value=canon)
         ent_canon = ttk.Entry(frm, textvariable=var_canon, width=40)
         ent_canon.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(frm, text="Variants (comma-separated):").grid(
             row=1, column=0, sticky="w", padx=4, pady=4)
-        var_variants = tk.StringVar(value=variants)
+        var_variants = tk.StringVar(master=top, value=variants)
         ent_variants = ttk.Entry(frm, textvariable=var_variants, width=40)
         ent_variants.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
 
@@ -603,11 +901,11 @@ class _SettingsDialog:
             top.destroy()
 
         btns = ttk.Frame(frm)
-        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(btns, text="Cancel", command=on_cancel
-                   ).pack(side="right", padx=4)
-        ttk.Button(btns, text="OK", command=on_ok
-                   ).pack(side="right", padx=4)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        _pill_button(btns, "OK", on_ok, primary=True, small=True
+                     ).pack(side="right", padx=(6, 0))
+        _pill_button(btns, "Cancel", on_cancel, small=True
+                     ).pack(side="right", padx=6)
 
         top.protocol("WM_DELETE_WINDOW", on_cancel)
         top.bind("<Return>", lambda _e: on_ok())
@@ -628,7 +926,109 @@ class _SettingsDialog:
         except tk.TclError:
             pass
 
+        _bring_to_front(top)
         ent_canon.focus_set()
+        top.wait_window()
+        return result["value"]
+
+    # -- snippet actions --------------------------------------------------
+
+    def _on_snippet_add(self) -> None:
+        result = self._open_snippet_editor("Add snippet", "", "")
+        if result is None:
+            return
+        trigger, expansion = result
+        if not trigger.strip():
+            return
+        self.snippet_tree.insert("", "end", values=(trigger.strip(), expansion))
+
+    def _on_snippet_edit(self) -> None:
+        sel = self.snippet_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        vals = self.snippet_tree.item(iid, "values")
+        trig_cur = str(vals[0]) if vals else ""
+        exp_cur = str(vals[1]) if vals and len(vals) > 1 else ""
+        result = self._open_snippet_editor("Edit snippet", trig_cur, exp_cur)
+        if result is None:
+            return
+        trigger, expansion = result
+        if not trigger.strip():
+            return
+        self.snippet_tree.item(iid, values=(trigger.strip(), expansion))
+
+    def _on_snippet_remove(self) -> None:
+        for iid in self.snippet_tree.selection():
+            self.snippet_tree.delete(iid)
+
+    def _open_snippet_editor(self, title: str, trigger: str,
+                             expansion: str) -> Optional[tuple[str, str]]:
+        """Modal sub-dialog with trigger + expansion fields. Mirrors the vocab
+        editor. Returns (trigger, expansion) on OK, None on Cancel."""
+        top = tk.Toplevel(self.dialog)
+        top.title(title)
+        top.configure(bg=_BG_CONTENT)
+        top.resizable(False, False)
+        top.transient(self.dialog)
+        try:
+            top.grab_set()
+        except tk.TclError:
+            pass
+
+        frm = ttk.Frame(top, padding=14)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Spoken trigger:").grid(
+            row=0, column=0, sticky="w", padx=4, pady=4)
+        var_trigger = tk.StringVar(master=top, value=trigger)
+        ent_trigger = ttk.Entry(frm, textvariable=var_trigger, width=40)
+        ent_trigger.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+
+        ttk.Label(frm, text="Expands to:").grid(
+            row=1, column=0, sticky="w", padx=4, pady=4)
+        var_expansion = tk.StringVar(master=top, value=expansion)
+        ent_expansion = ttk.Entry(frm, textvariable=var_expansion, width=40)
+        ent_expansion.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+
+        result: dict[str, Optional[tuple[str, str]]] = {"value": None}
+
+        def on_ok() -> None:
+            result["value"] = (var_trigger.get(), var_expansion.get())
+            top.destroy()
+
+        def on_cancel() -> None:
+            result["value"] = None
+            top.destroy()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        _pill_button(btns, "OK", on_ok, primary=True, small=True
+                     ).pack(side="right", padx=(6, 0))
+        _pill_button(btns, "Cancel", on_cancel, small=True
+                     ).pack(side="right", padx=6)
+
+        top.protocol("WM_DELETE_WINDOW", on_cancel)
+        top.bind("<Return>", lambda _e: on_ok())
+        top.bind("<Escape>", lambda _e: on_cancel())
+
+        # Center over parent dialog.
+        top.update_idletasks()
+        try:
+            px = self.dialog.winfo_rootx()
+            py = self.dialog.winfo_rooty()
+            pw = self.dialog.winfo_width()
+            ph = self.dialog.winfo_height()
+            tw = top.winfo_width()
+            th = top.winfo_height()
+            x = px + max(0, (pw - tw) // 2)
+            y = py + max(0, (ph - th) // 3)
+            top.geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+
+        _bring_to_front(top)
+        ent_trigger.focus_set()
         top.wait_window()
         return result["value"]
 
@@ -672,8 +1072,26 @@ class _SettingsDialog:
         intensity_label = self.var_polish_intensity.get().strip() or "Standard"
         llm["polish_intensity"] = intensity_label.lower()
 
-        # Vocabulary section is fully owned by this dialog.
+        # On-screen HUD.
+        ui = cfg.setdefault("ui", {})
+        ui["overlay"] = bool(self.var_overlay.get())
+        ui["overlay_interactive"] = bool(self.var_overlay_interactive.get())
+        ui["overlay_position"] = self.var_overlay_position.get()
+
+        # Voice commands.
+        cfg.setdefault("commands", {})["enabled"] = bool(
+            self.var_commands_enabled.get())
+
+        # Edit mode: only the enable flag is exposed; preserve modifiers /
+        # threshold already on disk (read-modify-write) so power-user edits stick.
+        edit = cfg.setdefault("edit_mode", {})
+        edit["enabled"] = bool(self.var_edit_enabled.get())
+        edit.setdefault("modifiers", ["ctrl", "alt"])
+        edit.setdefault("hold_threshold_ms", 350)
+
+        # Vocabulary + snippets sections are fully owned by this dialog.
         cfg["vocabulary"] = self._collect_vocabulary()
+        cfg["snippets"] = self._collect_snippets()
 
         try:
             _write_config(cfg)

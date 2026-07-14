@@ -22,7 +22,8 @@ class ContinuousAudioRecorder:
 
     def __init__(self, chunk=1024, format=pyaudio.paInt16, channels=1, rate=16000,
                  silence_threshold=0.015, silence_duration=1.5,
-                 min_chunk_duration_s=0.5, ctx_provider=None):
+                 min_chunk_duration_s=0.5, ctx_provider=None,
+                 level_callback=None):
         self.chunk = chunk
         self.format = format
         self.channels = channels
@@ -36,6 +37,9 @@ class ContinuousAudioRecorder:
         # Optional callable sampled when a chunk is queued; its return value
         # travels with the audio as (audio, ctx). Used for window context.
         self._ctx_provider = ctx_provider
+        # Optional per-frame RMS callback (~every chunk/rate seconds) while
+        # recording. Drives the HUD waveform; must be cheap and non-blocking.
+        self._level_cb = level_callback
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.min_chunk_duration_s = min_chunk_duration_s
@@ -117,12 +121,18 @@ class ContinuousAudioRecorder:
                 log.warning(f"[audio] read error: {e}")
                 break
 
+            arr = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            rms = float(np.sqrt(np.mean(np.square(arr))))
+            if self._level_cb is not None:
+                try:
+                    self._level_cb(rms)
+                except Exception:
+                    pass
+
             if self._single_shot:
                 frames.append(data)
                 continue
 
-            arr = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-            rms = float(np.sqrt(np.mean(np.square(arr))))
             if rms > self.silence_threshold:
                 frames.append(data)
                 silence_frames = 0
@@ -134,6 +144,12 @@ class ContinuousAudioRecorder:
                         self._put_chunk(frames)
                     frames = []
                     silence_frames = 0
+
+        if self._level_cb is not None:
+            try:
+                self._level_cb(0.0)
+            except Exception:
+                pass
 
         # Close OUR stream snapshot. Don't touch self.stream if start_recording
         # already replaced it with a newer stream.
