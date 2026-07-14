@@ -164,6 +164,27 @@ def _pill_button(parent: tk.Misc, text: str, command,
                      font=_BTN_FONT, **colors)
 
 
+def _bring_to_front(win: tk.Misc) -> None:
+    """Force a window to the foreground and give it keyboard focus.
+
+    Settings (and its modal sub-editors) are created on the pystray tray
+    callback thread, which does NOT hold Windows foreground-activation
+    rights. Without this, a freshly created Toplevel — e.g. the "Add
+    snippet" / "Add vocabulary" editor — can open *behind* the active app
+    while it grabs input, so the parent window looks frozen and the button
+    appears to do nothing. A momentary topmost flip plus focus_force pulls
+    the window to the front without leaving it permanently above other apps.
+    """
+    try:
+        win.lift()
+        win.attributes("-topmost", True)
+        win.update_idletasks()
+        win.focus_force()
+        win.attributes("-topmost", False)
+    except tk.TclError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Config I/O
 # ---------------------------------------------------------------------------
@@ -403,6 +424,7 @@ class _SettingsDialog:
                 pass
         self.dialog.grab_set()
         self.dialog.focus_set()
+        _bring_to_front(self.dialog)
 
     # -- snapshotting -----------------------------------------------------
 
@@ -902,6 +924,7 @@ class _SettingsDialog:
         except tk.TclError:
             pass
 
+        _bring_to_front(top)
         ent_canon.focus_set()
         top.wait_window()
         return result["value"]
@@ -1002,6 +1025,7 @@ class _SettingsDialog:
         except tk.TclError:
             pass
 
+        _bring_to_front(top)
         ent_trigger.focus_set()
         top.wait_window()
         return result["value"]
