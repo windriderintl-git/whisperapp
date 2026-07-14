@@ -354,8 +354,8 @@ class _SettingsDialog:
             str(mods[0]).lower() if len(mods) > 0 else "ctrl", "Ctrl")
         mod2 = _MODIFIER_FROM_CONFIG.get(
             str(mods[1]).lower() if len(mods) > 1 else "win", "Win")
-        self.var_mod1 = tk.StringVar(value=mod1)
-        self.var_mod2 = tk.StringVar(value=mod2)
+        self.var_mod1 = tk.StringVar(master=self.dialog, value=mod1)
+        self.var_mod2 = tk.StringVar(master=self.dialog, value=mod2)
 
         whisper_model = self._cfg.get("whisper", {}).get("model", "small.en")
         if whisper_model not in _WHISPER_MODELS:
@@ -363,15 +363,15 @@ class _SettingsDialog:
             self._whisper_choices = _WHISPER_MODELS + [whisper_model]
         else:
             self._whisper_choices = list(_WHISPER_MODELS)
-        self.var_whisper_model = tk.StringVar(value=whisper_model)
+        self.var_whisper_model = tk.StringVar(master=self.dialog, value=whisper_model)
 
         output_mode = self._cfg.get("output", {}).get("mode", "type")
         if output_mode not in {v for _, v in _OUTPUT_LABELS}:
             output_mode = "type"
-        self.var_output_mode = tk.StringVar(value=output_mode)
+        self.var_output_mode = tk.StringVar(master=self.dialog, value=output_mode)
 
         self.var_llm_enabled = tk.BooleanVar(
-            value=bool(self._cfg.get("llm", {}).get("enabled", True)))
+            master=self.dialog, value=bool(self._cfg.get("llm", {}).get("enabled", True)))
 
         polish_raw = str(self._cfg.get("llm", {}).get("polish_intensity",
                                                      "standard")).lower()
@@ -380,38 +380,40 @@ class _SettingsDialog:
             "standard": "Standard",
             "aggressive": "Aggressive",
         }.get(polish_raw, "Standard")
-        self.var_polish_intensity = tk.StringVar(value=polish_label)
+        self.var_polish_intensity = tk.StringVar(master=self.dialog, value=polish_label)
         self.var_polish_tooltip = tk.StringVar(
-            value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
+            master=self.dialog, value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
 
         ollama_host = self._cfg.get("llm", {}).get("host", "http://localhost:11434")
         self._ollama_models = _fetch_ollama_models(ollama_host)
         current_model = str(self._cfg.get("llm", {}).get("model", "qwen2.5:3b"))
         if current_model and current_model not in self._ollama_models:
             self._ollama_models = [current_model] + self._ollama_models
-        self.var_ollama_model = tk.StringVar(value=current_model)
+        self.var_ollama_model = tk.StringVar(master=self.dialog, value=current_model)
 
-        self.var_autostart = tk.BooleanVar(value=_autostart_currently_enabled())
+        self.var_autostart = tk.BooleanVar(master=self.dialog,
+                                           value=_autostart_currently_enabled())
 
         # On-screen HUD (ui:) ------------------------------------------------
         ui_cfg = self._cfg.get("ui", {}) or {}
-        self.var_overlay = tk.BooleanVar(value=bool(ui_cfg.get("overlay", True)))
+        self.var_overlay = tk.BooleanVar(master=self.dialog,
+                                         value=bool(ui_cfg.get("overlay", True)))
         self.var_overlay_interactive = tk.BooleanVar(
-            value=bool(ui_cfg.get("overlay_interactive", True)))
+            master=self.dialog, value=bool(ui_cfg.get("overlay_interactive", True)))
         overlay_pos = str(ui_cfg.get("overlay_position", "bottom")).lower()
         if overlay_pos not in _OVERLAY_POSITIONS:
             overlay_pos = "bottom"
-        self.var_overlay_position = tk.StringVar(value=overlay_pos)
+        self.var_overlay_position = tk.StringVar(master=self.dialog, value=overlay_pos)
 
         # Voice commands (commands:) ----------------------------------------
         cmd_cfg = self._cfg.get("commands", {}) or {}
         self.var_commands_enabled = tk.BooleanVar(
-            value=bool(cmd_cfg.get("enabled", True)))
+            master=self.dialog, value=bool(cmd_cfg.get("enabled", True)))
 
         # Edit mode (edit_mode:) --------------------------------------------
         edit_cfg = self._cfg.get("edit_mode", {}) or {}
         self.var_edit_enabled = tk.BooleanVar(
-            value=bool(edit_cfg.get("enabled", True)))
+            master=self.dialog, value=bool(edit_cfg.get("enabled", True)))
 
         self._build_ui()
         self._size_and_center()
@@ -878,13 +880,13 @@ class _SettingsDialog:
 
         ttk.Label(frm, text="Canonical spelling:").grid(
             row=0, column=0, sticky="w", padx=4, pady=4)
-        var_canon = tk.StringVar(value=canon)
+        var_canon = tk.StringVar(master=top, value=canon)
         ent_canon = ttk.Entry(frm, textvariable=var_canon, width=40)
         ent_canon.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(frm, text="Variants (comma-separated):").grid(
             row=1, column=0, sticky="w", padx=4, pady=4)
-        var_variants = tk.StringVar(value=variants)
+        var_variants = tk.StringVar(master=top, value=variants)
         ent_variants = ttk.Entry(frm, textvariable=var_variants, width=40)
         ent_variants.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
 
@@ -979,13 +981,13 @@ class _SettingsDialog:
 
         ttk.Label(frm, text="Spoken trigger:").grid(
             row=0, column=0, sticky="w", padx=4, pady=4)
-        var_trigger = tk.StringVar(value=trigger)
+        var_trigger = tk.StringVar(master=top, value=trigger)
         ent_trigger = ttk.Entry(frm, textvariable=var_trigger, width=40)
         ent_trigger.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
 
         ttk.Label(frm, text="Expands to:").grid(
             row=1, column=0, sticky="w", padx=4, pady=4)
-        var_expansion = tk.StringVar(value=expansion)
+        var_expansion = tk.StringVar(master=top, value=expansion)
         ent_expansion = ttk.Entry(frm, textvariable=var_expansion, width=40)
         ent_expansion.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
 
