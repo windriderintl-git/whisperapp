@@ -107,6 +107,14 @@ _WS_EX_NOACTIVATE = 0x08000000
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_TRANSPARENT = 0x00000020
 _WS_EX_LAYERED = 0x00080000
+# Z-order re-assert: Windows' topmost flag is not sticky — a newly shown
+# top-level (or fullscreen app) can push our non-activating tool window behind
+# it and it stays there. We periodically re-raise to HWND_TOPMOST to recover.
+_HWND_TOPMOST = -1
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOACTIVATE = 0x0010
+_TOPMOST_MS = 1500    # how often the Tk thread re-asserts always-on-top
 
 
 class Overlay:
@@ -151,6 +159,8 @@ class Overlay:
 
         # Tk-thread-only state (never touched from other threads).
         self._root = None
+        self._hwnd = None        # cached top-level HWND (Windows topmost re-assert)
+        self._topmost_job = None  # recurring after() id for the topmost re-assert
         self._canvas = None
         self._cur_w = self._width
         self._pill_id = None
@@ -236,6 +246,7 @@ class Overlay:
             return
         try:
             self._root.after(_POLL_MS, self._poll_queue)
+            self._schedule_topmost()
             self._root.mainloop()
         except Exception as e:
             log.warning("overlay mainloop ended abnormally: %s", e)
@@ -377,6 +388,8 @@ class Overlay:
             # makes Windows skip rendering it entirely — an invisible pill.
             child = self._root.winfo_id()
             hwnd = user32.GetParent(child) or child
+            # Cache the real top-level handle for the periodic topmost re-assert.
+            self._hwnd = hwnd
             # Prefer the Ptr variants on 64-bit; fall back to the W variants.
             get_long = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
             set_long = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
@@ -391,6 +404,37 @@ class Overlay:
             user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
         except Exception as e:
             log.warning("could not apply non-activating window styles: %s", e)
+
+    def _reassert_topmost(self) -> None:
+        """Re-raise the pill to HWND_TOPMOST. Windows does not keep the topmost
+        flag sticky: another top-level or fullscreen window can slide above us
+        and we stay buried. Called on a slow timer while visible so the pill
+        always climbs back to the front. Non-activating (SWP_NOACTIVATE) so it
+        never steals focus from whatever the user is dictating into."""
+        if sys.platform != "win32" or not self._visible or self._hwnd is None:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            # Explicit argtypes: HWND_TOPMOST is -1, which must widen to a full
+            # pointer-sized handle. Passed as an untyped ctypes int it can be
+            # truncated on 64-bit, silently no-op'ing the raise.
+            fn = ctypes.windll.user32.SetWindowPos
+            fn.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                           ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            fn.restype = wintypes.BOOL
+            fn(self._hwnd, wintypes.HWND(_HWND_TOPMOST), 0, 0, 0, 0,
+               _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE)
+        except Exception as e:
+            log.debug("overlay topmost re-assert failed: %s", e)
+
+    def _schedule_topmost(self) -> None:
+        """(Re)start the recurring topmost re-assert on the Tk thread."""
+        self._reassert_topmost()
+        try:
+            self._topmost_job = self._root.after(_TOPMOST_MS, self._schedule_topmost)
+        except Exception:
+            self._topmost_job = None
 
     # ----------------------------------------------------- Tk-thread updates
 
@@ -695,12 +739,19 @@ class Overlay:
 
     def _teardown_ui(self) -> None:
         self._stop_anim()
+        if self._topmost_job is not None:
+            try:
+                self._root.after_cancel(self._topmost_job)
+            except Exception:
+                pass
+            self._topmost_job = None
         try:
             if self._root is not None:
                 self._root.destroy()
         except Exception:
             pass
         self._root = None
+        self._hwnd = None
         self._canvas = None
         self._visible = False
 
