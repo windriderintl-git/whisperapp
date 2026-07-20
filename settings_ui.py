@@ -1109,6 +1109,18 @@ class _SettingsDialog:
         self._snapshot = new_snapshot
 
         _apply_autostart(bool(self.var_autostart.get()))
+
+        # Hot-apply the restart-free settings (e.g. polish intensity) to the
+        # live app so they take effect on the next dictation. Without this the
+        # new value only sits in config.yaml until a manual restart, since
+        # these fields aren't in the restart-required snapshot.
+        apply = getattr(self.parent_app, "apply_runtime_settings", None)
+        if callable(apply):
+            try:
+                apply(cfg)
+            except Exception:  # noqa: BLE001
+                log.exception("Failed to hot-apply runtime settings")
+
         return True
 
     def _restart_required(self) -> bool:

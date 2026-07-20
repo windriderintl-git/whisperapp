@@ -185,6 +185,33 @@ class App:
         if self._warmup_on_start:
             self.polisher.warmup()
 
+    def apply_runtime_settings(self, config: dict | None = None) -> None:
+        """Hot-apply settings that don't need a process restart. The Settings
+        dialog calls this right after it writes config.yaml, so changes like
+        polish intensity take effect on the very next dictation instead of
+        silently waiting for a manual restart (hotkey / Whisper model still
+        need a restart, and the dialog prompts for those separately).
+
+        Only cheap in-memory fields are touched here — nothing that owns a
+        thread or a loaded model."""
+        cfg = config if config is not None else self.config
+        try:
+            l = cfg.get("llm", {}) or {}
+            self.polisher.polish_intensity = str(
+                l.get("polish_intensity", self.polisher.polish_intensity))
+            self.polisher.enabled = bool(l.get("enabled", self.polisher.enabled))
+            new_model = l.get("model")
+            if new_model:
+                self.polisher.model = new_model
+            self.skip_polish_below = int(
+                l.get("skip_below_words", self.skip_polish_below))
+            # Keep the stored snapshot coherent for anything that reads it later.
+            self.config = cfg
+            log.info("[settings] runtime-applied: polish_intensity=%s llm_enabled=%s",
+                     self.polisher.polish_intensity, self.polisher.enabled)
+        except Exception as e:
+            log.warning("apply_runtime_settings failed: %s", e)
+
     # ----- status -----
 
     def _notify(self, state: str) -> None:
