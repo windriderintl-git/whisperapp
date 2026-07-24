@@ -62,8 +62,11 @@ _OUTPUT_LABELS = [
 _FALLBACK_MODELS = ["qwen2.5:3b", "qwen2.5:7b", "llama3.2:3b", "phi3:mini"]
 
 # Polish intensity: UI label <-> config value (lowercase).
-_POLISH_INTENSITY_LABELS = ["Light", "Standard", "Aggressive"]
+# "Off" bypasses the LLM entirely — raw transcription is pasted with no Ollama
+# round-trip (fastest path). It maps to llm.enabled = False on save.
+_POLISH_INTENSITY_LABELS = ["Off", "Light", "Standard", "Aggressive"]
 _POLISH_INTENSITY_TOOLTIPS = {
+    "Off": "No AI polishing. Pastes the raw transcription instantly — fastest, and Ollama stays idle.",
     "Light": "Preserves every word. Only fixes punctuation.",
     "Standard": "Removes filler (um, uh). Fixes sentence boundaries.",
     "Aggressive": "Combines fragments. Rephrases for flow. Best for posts/essays.",
@@ -370,16 +373,20 @@ class _SettingsDialog:
             output_mode = "type"
         self.var_output_mode = tk.StringVar(master=self.dialog, value=output_mode)
 
-        self.var_llm_enabled = tk.BooleanVar(
-            master=self.dialog, value=bool(self._cfg.get("llm", {}).get("enabled", True)))
+        llm_enabled = bool(self._cfg.get("llm", {}).get("enabled", True))
 
         polish_raw = str(self._cfg.get("llm", {}).get("polish_intensity",
                                                      "standard")).lower()
         polish_label = {
+            "off": "Off",
             "light": "Light",
             "standard": "Standard",
             "aggressive": "Aggressive",
         }.get(polish_raw, "Standard")
+        # A disabled master switch (or an explicit "off" intensity) both surface
+        # as "Off" in the single Intensity control.
+        if not llm_enabled:
+            polish_label = "Off"
         self.var_polish_intensity = tk.StringVar(master=self.dialog, value=polish_label)
         self.var_polish_tooltip = tk.StringVar(
             master=self.dialog, value=_POLISH_INTENSITY_TOOLTIPS[polish_label])
@@ -645,25 +652,21 @@ class _SettingsDialog:
                      ).grid(row=0, column=1, sticky="w", padx=(10, 0), pady=4)
 
         lf = self._section(page, "LLM polish (Ollama)")
-        ttk.Checkbutton(lf, text="Polish transcripts with a local LLM",
-                        variable=self.var_llm_enabled
-                        ).grid(row=0, column=0, columnspan=2, sticky="w",
-                               pady=2)
-        self._lbl(lf, "Intensity").grid(row=1, column=0, sticky="w", pady=4)
+        self._lbl(lf, "Intensity").grid(row=0, column=0, sticky="w", pady=4)
         intensity_cb = ttk.Combobox(lf, textvariable=self.var_polish_intensity,
                                     state="readonly",
                                     values=_POLISH_INTENSITY_LABELS, width=16)
-        intensity_cb.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=4)
+        intensity_cb.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=4)
         intensity_cb.bind("<<ComboboxSelected>>",
                           self._on_polish_intensity_changed)
         tk.Label(lf, textvariable=self.var_polish_tooltip, bg=_BG_CONTENT,
                  fg=_TEXT_MUTED, font=_FONT_BASE, anchor="w", justify="left",
-                 wraplength=440).grid(row=2, column=0, columnspan=2,
+                 wraplength=440).grid(row=1, column=0, columnspan=2,
                                       sticky="w", pady=(0, 4))
-        self._lbl(lf, "Model").grid(row=3, column=0, sticky="w", pady=4)
+        self._lbl(lf, "Model").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Combobox(lf, textvariable=self.var_ollama_model, state="normal",
                      values=self._ollama_models, width=28
-                     ).grid(row=3, column=1, sticky="w", padx=(10, 0), pady=4)
+                     ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=4)
 
         cf = self._section(page, "Voice commands")
         ttk.Checkbutton(cf, text='Enable spoken commands ("press enter", '
@@ -1065,12 +1068,14 @@ class _SettingsDialog:
         cfg.setdefault("whisper", {})["model"] = self.var_whisper_model.get()
         cfg.setdefault("output", {})["mode"] = self.var_output_mode.get()
         llm = cfg.setdefault("llm", {})
-        llm["enabled"] = bool(self.var_llm_enabled.get())
         model_name = self.var_ollama_model.get().strip()
         if model_name:
             llm["model"] = model_name
+        # The Intensity dropdown is the single control for polish. "Off" flips the
+        # master enable so the app skips Ollama entirely (raw transcription).
         intensity_label = self.var_polish_intensity.get().strip() or "Standard"
         llm["polish_intensity"] = intensity_label.lower()
+        llm["enabled"] = (intensity_label != "Off")
 
         # On-screen HUD.
         ui = cfg.setdefault("ui", {})

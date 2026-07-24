@@ -20,6 +20,8 @@ audio:
   min_chunk_duration_s: 0.5
 llm:
   enabled: true
+  # off | light | standard | aggressive. "off" (or enabled: false) skips Ollama
+  # entirely and pastes the raw transcription — fastest talk-to-paste path.
   polish_intensity: standard
   backend: ollama
   model: qwen2.5:3b

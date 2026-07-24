@@ -128,7 +128,9 @@ class App:
         self._overlay.start()
 
         self._warmup_on_start = l.get("warmup_on_start", False)
-        if self.polisher.enabled:
+        # Don't spin up / warm Ollama when polish is Off — the whole point of Off
+        # is a lighter, faster path with no local LLM running.
+        if self._polish_active():
             threading.Thread(target=self._ensure_llm_ready, daemon=True).start()
 
         self.last_transcript = ""
@@ -197,6 +199,7 @@ class App:
         cfg = config if config is not None else self.config
         try:
             l = cfg.get("llm", {}) or {}
+            was_active = self._polish_active()
             self.polisher.polish_intensity = str(
                 l.get("polish_intensity", self.polisher.polish_intensity))
             self.polisher.enabled = bool(l.get("enabled", self.polisher.enabled))
@@ -209,8 +212,18 @@ class App:
             self.config = cfg
             log.info("[settings] runtime-applied: polish_intensity=%s llm_enabled=%s",
                      self.polisher.polish_intensity, self.polisher.enabled)
+            # If the user just turned polish back ON (e.g. Off -> Light), Ollama
+            # may not have been started at boot. Bring it up now so the next
+            # dictation isn't silently downgraded to raw output.
+            if self._polish_active() and not was_active:
+                threading.Thread(target=self._ensure_llm_ready, daemon=True).start()
         except Exception as e:
             log.warning("apply_runtime_settings failed: %s", e)
+
+    def _polish_active(self) -> bool:
+        """True when a dictation should be sent through the LLM. False when the
+        master switch is off OR intensity is 'off' (transcribe-only)."""
+        return self.polisher.enabled and self.polisher.polish_intensity != "off"
 
     # ----- status -----
 
@@ -470,7 +483,7 @@ class App:
         text = parsed.text
         word_count = len(text.split())
 
-        if self.polisher.enabled and word_count >= self.skip_polish_below:
+        if self._polish_active() and word_count >= self.skip_polish_below:
             override = self.context_override if self.context_enabled else "cleanup_default"
             prompt_name = select_prompt_for(proc, title, override)
             log.info(f"[ctx] {prompt_name}  <- proc={proc or '?'}")
@@ -481,8 +494,10 @@ class App:
             if (not was_unreachable) and self.polisher._warned_unreachable:
                 self._notify("degraded:ollama")
         else:
-            if self.polisher.enabled:
+            if self._polish_active():
                 log.info(f"[skip] {word_count} words < {self.skip_polish_below}, no polish")
+            else:
+                log.info("[skip] polish off — pasting raw transcription")
             polished = text
 
         polished = apply_vocabulary(polished, self.vocab)

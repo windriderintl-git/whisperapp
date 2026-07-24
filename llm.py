@@ -79,7 +79,10 @@ class OllamaPolisher:
 
     def polish(self, text: str, prompt_name: str = "cleanup_default",
                stream_cb=None) -> str:
-        if not self.enabled or not text.strip():
+        # "off" intensity means: transcribe-only, no LLM round-trip. Short-circuit
+        # here too (not just at the call site) so no caller can accidentally pay
+        # the Ollama latency when the user has chosen raw output.
+        if not self.enabled or self.polish_intensity == "off" or not text.strip():
             return text
         try:
             template = _load_prompt(prompt_name, self.polish_intensity)
